@@ -1,0 +1,17 @@
+
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+
+SQLAlchemy==2.0.25
+httpx==0.25.2
+yfinance==0.2.36
+beautifulsoup4==4.12.3
+lxml==5.1.0
+python-dotenv==1.0.0
+pydantic==2.5.3
+apscheduler==3.10.4
+python-telegram-bot==20.7
+
+# AI APIs (optional)
+openai==1.10.0
+anthropic==0.18.1

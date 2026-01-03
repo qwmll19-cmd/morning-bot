@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+
+# 데이터베이스
+*.db
+*.sqlite
+*.sqlite3
+
+# 환경 변수
+.env
+
+# 백업 파일
+*.backup
+*.bak
+*~
+*.swp
+*.swo
+*.20260102_*
+*.20250*_*
+*.202[0-9]*_*
+
+# Archive 폴더
+archive_backups_*/
+backups/old_backups/
+
+# 로그 파일
+*.log
+collect_error.log
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 임시 파일
+*.tmp
+*.temp

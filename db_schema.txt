@@ -1,0 +1,96 @@
+CREATE TABLE news_daily (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date DATE,
+    source VARCHAR(100),
+    title VARCHAR(500),
+    url VARCHAR(500),
+    category VARCHAR(50),
+    is_top BOOLEAN DEFAULT 0,
+    keywords TEXT,
+    sentiment VARCHAR(50),
+    is_breaking BOOLEAN DEFAULT 0,
+    alert_sent BOOLEAN DEFAULT 0,
+    topic_key VARCHAR(100),
+    hot_score INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE sqlite_sequence(name,seq);
+CREATE INDEX idx_date ON news_daily(date);
+CREATE INDEX idx_category ON news_daily(category);
+CREATE INDEX idx_topic_key ON news_daily(topic_key);
+CREATE INDEX idx_hot_score ON news_daily(hot_score DESC);
+CREATE TABLE subscriber (
+	chat_id VARCHAR(50) NOT NULL, 
+	subscribed_alert BOOLEAN, 
+	custom_time VARCHAR(10), 
+	created_at DATETIME, 
+	PRIMARY KEY (chat_id)
+);
+CREATE INDEX ix_subscriber_chat_id ON subscriber (chat_id);
+CREATE TABLE market_daily (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date DATE,
+    
+    -- 환율
+    usd_krw REAL,
+    
+    -- 크립토
+    btc_usdt REAL,
+    btc_krw REAL,
+    btc_usd REAL,
+    btc_change_24h REAL,
+    crypto_usd TEXT,
+    
+    -- 금속/원자재
+    gold_usd REAL,
+    silver_usd REAL,
+    copper_usd REAL,
+    oil_usd REAL,
+    coffee_usd REAL,
+    palladium_usd REAL,
+    
+    -- KOSPI
+    kospi_index REAL,
+    kospi_top5 TEXT,
+    
+    -- 글로벌 지수
+    indices TEXT,
+    
+    -- 코멘트
+    summary_comment TEXT,
+    
+    -- 생성일
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+, nasdaq_index REAL, nasdaq_top5 TEXT, platinum_usd REAL, aluminum_usd REAL, nickel_usd REAL, zinc_usd REAL, lead_usd REAL);
+CREATE INDEX idx_market_date ON market_daily(date);
+CREATE TABLE lotto_stats_cache (
+    id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    updated_at TIMESTAMP NOT NULL,
+    total_draws INTEGER NOT NULL,
+    most_common JSONB NOT NULL,
+    least_common JSONB NOT NULL,
+    ai_scores JSONB NOT NULL
+);
+CREATE TABLE lotto_draws (
+    draw_no INTEGER PRIMARY KEY,
+    draw_date TEXT NOT NULL,
+    n1 INTEGER NOT NULL CHECK (n1 BETWEEN 1 AND 45),
+    n2 INTEGER NOT NULL CHECK (n2 BETWEEN 1 AND 45),
+    n3 INTEGER NOT NULL CHECK (n3 BETWEEN 1 AND 45),
+    n4 INTEGER NOT NULL CHECK (n4 BETWEEN 1 AND 45),
+    n5 INTEGER NOT NULL CHECK (n5 BETWEEN 1 AND 45),
+    n6 INTEGER NOT NULL CHECK (n6 BETWEEN 1 AND 45),
+    bonus INTEGER NOT NULL CHECK (bonus BETWEEN 1 AND 45),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_lotto_draws_date ON lotto_draws(draw_date);
+CREATE TABLE lotto_recommend_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    target_draw_no INTEGER NOT NULL,
+    lines TEXT NOT NULL,
+    recommend_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    match_results TEXT DEFAULT NULL
+);
+CREATE INDEX idx_lotto_logs_user ON lotto_recommend_logs(user_id);
+CREATE INDEX idx_lotto_logs_draw ON lotto_recommend_logs(target_draw_no);
