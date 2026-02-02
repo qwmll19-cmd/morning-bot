@@ -658,3 +658,164 @@ def admin_lotto_status(db: Session = Depends(get_db)) -> dict:
         "stats_cache_exists": cache is not None,
         "stats_cache_updated_at": cache.updated_at.isoformat() if cache else None
     }
+
+
+@app.get("/api/admin/lotto-export")
+def admin_lotto_export(db: Session = Depends(get_db)) -> dict:
+    """로컬 SQLite에서 로또 데이터 JSON 추출 (마이그레이션용)"""
+    from backend.app.db.models import LottoDraw
+
+    draws = db.query(LottoDraw).order_by(LottoDraw.draw_no).all()
+    data = [
+        {
+            "draw_no": d.draw_no,
+            "draw_date": d.draw_date,
+            "n1": d.n1, "n2": d.n2, "n3": d.n3,
+            "n4": d.n4, "n5": d.n5, "n6": d.n6,
+            "bonus": d.bonus
+        }
+        for d in draws
+    ]
+
+    return {
+        "status": "success",
+        "total": len(data),
+        "draws": data
+    }
+
+
+from pydantic import BaseModel as PydanticBaseModel
+from typing import List
+
+
+class LottoDrawImport(PydanticBaseModel):
+    draw_no: int
+    draw_date: str
+    n1: int
+    n2: int
+    n3: int
+    n4: int
+    n5: int
+    n6: int
+    bonus: int
+
+
+class LottoImportRequest(PydanticBaseModel):
+    draws: List[LottoDrawImport]
+
+
+@app.post("/api/admin/lotto-import")
+def admin_lotto_import(
+    request: LottoImportRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_cron_secret)
+) -> dict:
+    """
+    로또 데이터 일괄 import (Render PostgreSQL 마이그레이션용)
+
+    사용법:
+    1. 로컬에서 /api/admin/lotto-export 호출하여 JSON 추출
+    2. Render에서 /api/admin/lotto-import에 POST로 전송
+
+    curl -X POST -H "Content-Type: application/json" \\
+         -H "X-Cron-Secret: YOUR_SECRET" \\
+         -d @lotto_data.json \\
+         https://YOUR_APP.onrender.com/api/admin/lotto-import
+    """
+    from backend.app.db.models import LottoDraw, LottoStatsCache
+    from backend.app.services.lotto.stats_calculator import LottoStatsCalculator
+    import json
+    from datetime import datetime
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        imported = 0
+        skipped = 0
+
+        for draw in request.draws:
+            exists = db.query(LottoDraw).filter(LottoDraw.draw_no == draw.draw_no).first()
+            if exists:
+                skipped += 1
+                continue
+
+            new_draw = LottoDraw(
+                draw_no=draw.draw_no,
+                draw_date=draw.draw_date,
+                n1=draw.n1, n2=draw.n2, n3=draw.n3,
+                n4=draw.n4, n5=draw.n5, n6=draw.n6,
+                bonus=draw.bonus
+            )
+            db.add(new_draw)
+            imported += 1
+
+            if imported % 100 == 0:
+                db.commit()
+                logger.info(f"로또 import 진행 중: {imported}개")
+
+        db.commit()
+
+        # 통계 캐시 갱신
+        draws = db.query(LottoDraw).order_by(LottoDraw.draw_no).all()
+        draws_dict = [
+            {
+                'draw_no': d.draw_no,
+                'n1': d.n1, 'n2': d.n2, 'n3': d.n3,
+                'n4': d.n4, 'n5': d.n5, 'n6': d.n6,
+                'bonus': d.bonus
+            }
+            for d in draws
+        ]
+
+        calculator = LottoStatsCalculator()
+        most_common, least_common = calculator.calculate_most_least(draws_dict)
+        ai_scores = calculator.calculate_ai_scores(draws_dict)
+
+        cache = db.query(LottoStatsCache).first()
+        if cache:
+            cache.updated_at = datetime.now()
+            cache.total_draws = len(draws_dict)
+            cache.most_common = json.dumps(most_common)
+            cache.least_common = json.dumps(least_common)
+            cache.ai_scores = json.dumps(ai_scores)
+        else:
+            cache = LottoStatsCache(
+                updated_at=datetime.now(),
+                total_draws=len(draws_dict),
+                most_common=json.dumps(most_common),
+                least_common=json.dumps(least_common),
+                ai_scores=json.dumps(ai_scores)
+            )
+            db.add(cache)
+
+        db.commit()
+
+        # ML 모델 학습
+        ml_result = None
+        if len(draws_dict) >= 100:
+            try:
+                from backend.app.services.lotto.ml_trainer import LottoMLTrainer
+                trainer = LottoMLTrainer()
+                ml_result = trainer.train(draws_dict, test_size=0.2)
+                logger.info(f"ML 모델 학습 완료: Acc={ml_result['test_accuracy']:.4f}")
+            except Exception as e:
+                logger.warning(f"ML 모델 학습 실패: {e}")
+
+        return {
+            "status": "success",
+            "imported": imported,
+            "skipped": skipped,
+            "total_in_db": len(draws_dict),
+            "stats_cache_updated": True,
+            "ml_trained": ml_result is not None,
+            "ml_accuracy": ml_result['test_accuracy'] if ml_result else None
+        }
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"로또 import 실패: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "message": str(e)
+        }
