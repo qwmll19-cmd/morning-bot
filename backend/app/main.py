@@ -481,3 +481,180 @@ def cron_lotto_ml_eval(_: None = Depends(verify_cron_secret)) -> dict:
         return {"status": "success", "job": "lotto_ml_eval"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/admin/lotto-init")
+def admin_lotto_init(
+    start: int = Query(default=1, description="시작 회차"),
+    end: int = Query(default=None, description="종료 회차 (미지정 시 최신까지)"),
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_cron_secret)
+) -> dict:
+    """
+    로또 초기 데이터 로드 (Render PostgreSQL 초기화용)
+
+    사용법: GET /api/admin/lotto-init?start=1&end=1209
+    헤더: X-Cron-Secret: {your_secret}
+
+    주의: 전체 1200+회 수집 시 약 10-20분 소요
+    """
+    from backend.app.collectors.lotto.api_client import LottoAPIClient
+    from backend.app.db.models import LottoDraw, LottoStatsCache
+    from backend.app.services.lotto.stats_calculator import LottoStatsCalculator
+    import json
+    from datetime import datetime
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        # 1. 현재 DB 상태 확인
+        latest_db_row = db.query(LottoDraw).order_by(LottoDraw.draw_no.desc()).first()
+        current_latest = latest_db_row.draw_no if latest_db_row else 0
+        total_in_db = db.query(LottoDraw).count()
+
+        # 2. API 클라이언트 초기화
+        api_client = LottoAPIClient(delay=0.3)
+
+        # 3. 최신 회차 확인
+        if end is None:
+            end = api_client.get_latest_draw_no()
+            if end == 0:
+                return {
+                    "status": "error",
+                    "message": "최신 회차 확인 실패 (API 차단 가능)",
+                    "current_db_latest": current_latest,
+                    "total_in_db": total_in_db
+                }
+
+        # 4. 수집 대상 회차 결정
+        missing_draws = []
+        for draw_no in range(start, end + 1):
+            exists = db.query(LottoDraw).filter(LottoDraw.draw_no == draw_no).first()
+            if not exists:
+                missing_draws.append(draw_no)
+
+        if not missing_draws:
+            return {
+                "status": "success",
+                "message": "이미 모든 데이터가 존재합니다",
+                "current_db_latest": current_latest,
+                "total_in_db": total_in_db,
+                "requested_range": f"{start}~{end}"
+            }
+
+        # 5. 데이터 수집
+        collected = 0
+        failed = []
+
+        for draw_no in missing_draws:
+            draw_info = api_client.get_lotto_draw(draw_no, retries=2)
+
+            if draw_info is None:
+                failed.append(draw_no)
+                continue
+
+            new_draw = LottoDraw(
+                draw_no=draw_no,
+                draw_date=draw_info['date'],
+                n1=draw_info['n1'],
+                n2=draw_info['n2'],
+                n3=draw_info['n3'],
+                n4=draw_info['n4'],
+                n5=draw_info['n5'],
+                n6=draw_info['n6'],
+                bonus=draw_info['bonus']
+            )
+            db.add(new_draw)
+            collected += 1
+
+            # 100개마다 커밋 (메모리 관리)
+            if collected % 100 == 0:
+                db.commit()
+                logger.info(f"로또 초기화 진행 중: {collected}개 저장됨")
+
+        db.commit()
+
+        # 6. 통계 캐시 갱신
+        draws = db.query(LottoDraw).order_by(LottoDraw.draw_no).all()
+        draws_dict = [
+            {
+                'draw_no': d.draw_no,
+                'n1': d.n1, 'n2': d.n2, 'n3': d.n3,
+                'n4': d.n4, 'n5': d.n5, 'n6': d.n6,
+                'bonus': d.bonus
+            }
+            for d in draws
+        ]
+
+        calculator = LottoStatsCalculator()
+        most_common, least_common = calculator.calculate_most_least(draws_dict)
+        ai_scores = calculator.calculate_ai_scores(draws_dict)
+
+        cache = db.query(LottoStatsCache).first()
+        if cache:
+            cache.updated_at = datetime.now()
+            cache.total_draws = len(draws_dict)
+            cache.most_common = json.dumps(most_common)
+            cache.least_common = json.dumps(least_common)
+            cache.ai_scores = json.dumps(ai_scores)
+        else:
+            cache = LottoStatsCache(
+                updated_at=datetime.now(),
+                total_draws=len(draws_dict),
+                most_common=json.dumps(most_common),
+                least_common=json.dumps(least_common),
+                ai_scores=json.dumps(ai_scores)
+            )
+            db.add(cache)
+
+        db.commit()
+
+        # 7. ML 모델 학습 (데이터가 100개 이상일 때)
+        ml_result = None
+        if len(draws_dict) >= 100:
+            try:
+                from backend.app.services.lotto.ml_trainer import LottoMLTrainer
+                trainer = LottoMLTrainer()
+                ml_result = trainer.train(draws_dict, test_size=0.2)
+                logger.info(f"ML 모델 학습 완료: Acc={ml_result['test_accuracy']:.4f}")
+            except Exception as e:
+                logger.warning(f"ML 모델 학습 실패: {e}")
+
+        return {
+            "status": "success",
+            "message": f"{collected}개 회차 수집 완료",
+            "collected": collected,
+            "failed_draws": failed[:20] if failed else [],  # 처음 20개만
+            "failed_count": len(failed),
+            "total_in_db_after": len(draws_dict),
+            "stats_cache_updated": True,
+            "ml_trained": ml_result is not None,
+            "ml_accuracy": ml_result['test_accuracy'] if ml_result else None
+        }
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"로또 초기화 실패: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+
+@app.get("/api/admin/lotto-status")
+def admin_lotto_status(db: Session = Depends(get_db)) -> dict:
+    """로또 DB 상태 확인 (인증 불필요)"""
+    from backend.app.db.models import LottoDraw, LottoStatsCache
+
+    total = db.query(LottoDraw).count()
+    latest = db.query(LottoDraw).order_by(LottoDraw.draw_no.desc()).first()
+    cache = db.query(LottoStatsCache).first()
+
+    return {
+        "total_draws": total,
+        "latest_draw_no": latest.draw_no if latest else None,
+        "latest_draw_date": latest.draw_date if latest else None,
+        "stats_cache_exists": cache is not None,
+        "stats_cache_updated_at": cache.updated_at.isoformat() if cache else None
+    }
