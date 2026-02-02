@@ -9,7 +9,7 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: PYTHON_VERSION
-        value: "3.11"
+        value: "3.11.0"
       - key: TZ
         value: Asia/Seoul
       - key: DB_URL
