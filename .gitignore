@@ -53,10 +53,11 @@ Thumbs.db
 *.tmp
 *.temp
 
-# ML 모델 파일
-*.pkl
+# ML 모델 파일 (로또 모델 제외)
 *.joblib
 *.h5
+# *.pkl 제외 - 로또 ML 모델은 배포에 필요
+!backend/app/services/lotto/lotto_ml_model.pkl
 
 # 테스트/디버그 스크립트 (선택적)
 test_*.py
