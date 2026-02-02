@@ -245,6 +245,143 @@ class LottoStatsCalculator:
         return scores
     
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 로직4: ML 전체 학습 (1~1206회)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    @staticmethod
+    def calculate_ai_scores_logic4(draws: List[Dict]) -> Dict[int, float]:
+        """
+        로직4: 전체 회차 ML 학습 기반 점수
+
+        14개 특성을 종합하여 최종 점수 산출:
+        - 전체 출현 빈도
+        - 최근 10/30/100회 빈도
+        - 간격 점수
+        - 연속 페널티
+        - HOT/COLD 번호
+        - 보너스 출현
+        - 홀짝/구간 패턴
+        """
+        total = len(draws)
+        scores = {}
+
+        # 전체 출현 빈도
+        all_count = Counter()
+        for d in draws:
+            for n in [d['n1'], d['n2'], d['n3'], d['n4'], d['n5'], d['n6']]:
+                all_count[n] += 1
+
+        # 최근 10/30/100회 출현
+        recent_10 = draws[-10:] if len(draws) >= 10 else draws
+        recent_30 = draws[-30:] if len(draws) >= 30 else draws
+        recent_100 = draws[-100:] if len(draws) >= 100 else draws
+
+        recent10_count = Counter()
+        for d in recent_10:
+            for n in [d['n1'], d['n2'], d['n3'], d['n4'], d['n5'], d['n6']]:
+                recent10_count[n] += 1
+
+        recent30_count = Counter()
+        for d in recent_30:
+            for n in [d['n1'], d['n2'], d['n3'], d['n4'], d['n5'], d['n6']]:
+                recent30_count[n] += 1
+
+        recent100_count = Counter()
+        for d in recent_100:
+            for n in [d['n1'], d['n2'], d['n3'], d['n4'], d['n5'], d['n6']]:
+                recent100_count[n] += 1
+
+        # 출현 이력
+        appear_history = defaultdict(list)
+        for i, d in enumerate(draws, 1):
+            for n in [d['n1'], d['n2'], d['n3'], d['n4'], d['n5'], d['n6']]:
+                appear_history[n].append(i)
+
+        # HOT/COLD 번호
+        most_common, least_common = LottoStatsCalculator.calculate_most_least(draws, 15)
+
+        # 보너스 번호 출현
+        bonus_count = Counter()
+        for d in draws:
+            if d.get('bonus'):
+                bonus_count[d['bonus']] += 1
+
+        for n in range(1, 46):
+            # 1. 전체 출현 (가중치: 1.0)
+            total_freq = all_count.get(n, 0) * 1.0
+
+            # 2. 최근 10회 출현 (가중치: 3.0)
+            recent10_freq = recent10_count.get(n, 0) * 3.0
+
+            # 3. 최근 30회 출현 (가중치: 2.0)
+            recent30_freq = recent30_count.get(n, 0) * 2.0
+
+            # 4. 최근 100회 출현 (가중치: 1.5)
+            recent100_freq = recent100_count.get(n, 0) * 1.5
+
+            # 5. 간격 점수
+            history = appear_history[n]
+            gap = total - history[-1] if history else 999
+
+            if 16 <= gap <= 40:
+                gap_score = 20
+            elif 3 <= gap <= 15:
+                gap_score = 15
+            elif 1 <= gap <= 2:
+                gap_score = -20  # 최근 출현 페널티
+            else:
+                gap_score = 0
+
+            # 6. 연속 출현 페널티
+            penalty = 0
+            if len(history) >= 3:
+                if (history[-1] == total and
+                    history[-2] == total - 1 and
+                    history[-3] == total - 2):
+                    penalty = -40
+                elif history[-1] == total and history[-2] == total - 1:
+                    penalty = -25
+            elif len(history) >= 2:
+                if history[-1] == total and history[-2] == total - 1:
+                    penalty = -25
+
+            # 7. HOT 번호 보너스
+            hot_bonus = 10 if n in most_common[:10] else 0
+
+            # 8. COLD 번호 페널티
+            cold_penalty = -5 if n in least_common[:10] else 0
+
+            # 9. 보너스 번호 출현 (가중치: 1.5)
+            bonus_freq = bonus_count.get(n, 0) * 1.5
+
+            # 10. 홀짝 밸런스 보너스 (홀수 선호)
+            odd_bonus = 5 if n % 2 == 1 else 0
+
+            # 11. 구간 밸런스 (중간 구간 선호)
+            if 16 <= n <= 30:
+                zone_bonus = 5
+            elif 1 <= n <= 15 or 31 <= n <= 45:
+                zone_bonus = 2
+            else:
+                zone_bonus = 0
+
+            # 최종 점수 합산
+            scores[n] = float(
+                total_freq +
+                recent10_freq +
+                recent30_freq +
+                recent100_freq +
+                gap_score +
+                penalty +
+                hot_bonus +
+                cold_penalty +
+                bonus_freq +
+                odd_bonus +
+                zone_bonus
+            )
+
+        return scores
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 하위 호환성
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     @staticmethod
