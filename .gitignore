@@ -15,6 +15,8 @@ env/
 
 # 환경 변수
 .env
+.env.local
+.env.production
 
 # 백업 파일
 *.backup
@@ -25,19 +27,23 @@ env/
 *.20260102_*
 *.20250*_*
 *.202[0-9]*_*
+backups/
 
 # Archive 폴더
 archive_backups_*/
 backups/old_backups/
 
 # 로그 파일
+logs/
 *.log
 collect_error.log
+output.log
 
 # IDE
 .vscode/
 .idea/
 *.iml
+.claude/
 
 # OS
 .DS_Store
@@ -46,3 +52,26 @@ Thumbs.db
 # 임시 파일
 *.tmp
 *.temp
+
+# ML 모델 파일
+*.pkl
+*.joblib
+*.h5
+
+# 테스트/디버그 스크립트 (선택적)
+test_*.py
+fix_*.py
+fix_*.sh
+add_*.py
+update_*.py
+check_*.py
+train_*.py
+compare_*.py
+send_*.py
+collect_*.py
+setup_*.py
+quick_*.py
+init_db.py
+
+# 문서 (선택적 - 필요시 주석 해제)
+# *.md

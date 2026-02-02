@@ -1,0 +1,45 @@
+services:
+  - type: web
+    name: morning-bot
+    runtime: python
+    region: singapore  # 한국과 가까운 리전
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+      - key: TZ
+        value: Asia/Seoul
+      - key: DB_URL
+        fromDatabase:
+          name: morning-bot-db
+          property: connectionString
+      - key: NAVER_CLIENT_ID
+        sync: false
+      - key: NAVER_CLIENT_SECRET
+        sync: false
+      - key: UNIRATE_API_KEY
+        sync: false
+      - key: METALPRICE_API_KEY
+        sync: false
+      - key: METALSDEV_API_KEY
+        sync: false
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: CRON_SECRET
+        sync: false
+      - key: LOTTO_ADMIN_CHAT_ID
+        sync: false
+      - key: BACKEND_BASE_URL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+databases:
+  - name: morning-bot-db
+    plan: free
+    region: singapore

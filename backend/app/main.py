@@ -1,4 +1,6 @@
 from datetime import date as date_type
+from pathlib import Path
+import logging
 from typing import List, Optional
 
 from fastapi import FastAPI, Depends, Query
@@ -10,6 +12,25 @@ from backend.app.db.models import NewsDaily, MarketDaily
 from backend.app.collectors.market_collector import collect_market_daily
 from backend.app.scheduler.jobs import start_scheduler
 
+
+# ---- Logging ----
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_PATH = LOG_DIR / "server.log"
+
+root_logger = logging.getLogger()
+if not root_logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(LOG_PATH),
+        ],
+    )
+else:
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(logging.FileHandler(LOG_PATH))
 
 # ---- DB 초기화 ----
 Base.metadata.create_all(bind=engine)
@@ -381,3 +402,82 @@ def get_news(
         NewsItemResponse.model_validate(n, from_attributes=True)
         for n in news
     ]
+
+
+# ---- Cron API 엔드포인트 (cron-job.org용) ----
+from fastapi import Header, HTTPException
+import os
+
+CRON_SECRET = os.getenv("CRON_SECRET", "")
+
+
+def verify_cron_secret(x_cron_secret: str = Header(default="")) -> None:
+    """Cron 요청 인증 (선택적)"""
+    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid cron secret")
+
+
+@app.get("/api/cron/morning-collect")
+def cron_morning_collect(db: Session = Depends(get_db), _: None = Depends(verify_cron_secret)) -> dict:
+    """09:01 - 모든 데이터 수집"""
+    from backend.app.scheduler.jobs import job_morning_all
+    try:
+        job_morning_all()
+        return {"status": "success", "job": "morning_collect"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/cron/morning-send")
+def cron_morning_send(db: Session = Depends(get_db), _: None = Depends(verify_cron_secret)) -> dict:
+    """09:10 - 모닝 브리핑 전송"""
+    from backend.app.scheduler.jobs import job_calculate_changes_and_send
+    try:
+        job_calculate_changes_and_send()
+        return {"status": "success", "job": "morning_send"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/cron/breaking-collect")
+def cron_breaking_collect(_: None = Depends(verify_cron_secret)) -> dict:
+    """매시 55분 - 속보 수집"""
+    from backend.app.scheduler.jobs import job_collect_breaking_news
+    try:
+        job_collect_breaking_news()
+        return {"status": "success", "job": "breaking_collect"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/cron/breaking-send")
+def cron_breaking_send(_: None = Depends(verify_cron_secret)) -> dict:
+    """12시, 18시, 22시 - 속보 배치 전송"""
+    from backend.app.scheduler.jobs import job_send_breaking_batch
+    try:
+        job_send_breaking_batch()
+        return {"status": "success", "job": "breaking_send"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/cron/lotto-update")
+def cron_lotto_update(_: None = Depends(verify_cron_secret)) -> dict:
+    """토요일 21:00 - 로또 당첨번호 업데이트"""
+    from backend.app.scheduler.jobs import job_lotto_weekly_update
+    try:
+        job_lotto_weekly_update()
+        return {"status": "success", "job": "lotto_update"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/cron/lotto-ml-eval")
+def cron_lotto_ml_eval(_: None = Depends(verify_cron_secret)) -> dict:
+    """토요일 22:00 - 로또 ML 성능 평가"""
+    from backend.app.scheduler.jobs import job_lotto_performance_evaluation
+    try:
+        job_lotto_performance_evaluation()
+        return {"status": "success", "job": "lotto_ml_eval"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}

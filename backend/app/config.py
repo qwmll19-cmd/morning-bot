@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
 
@@ -8,7 +9,21 @@ load_dotenv()
 class Settings:
     APP_ENV: str = os.getenv("APP_ENV", "local")
 
-    DB_URL: str = os.getenv("DB_URL", "sqlite:///./backend/app/db/morning_bot.db")
+    PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
+    DEFAULT_DB_PATH: Path = PROJECT_ROOT / "morning_bot.db"
+    _RAW_DB_URL: Optional[str] = os.getenv("DB_URL")
+    if _RAW_DB_URL:
+        if _RAW_DB_URL.startswith("sqlite:///"):
+            raw_path = _RAW_DB_URL.replace("sqlite:///", "", 1)
+            if raw_path.startswith("./") or not raw_path.startswith("/"):
+                resolved = (PROJECT_ROOT / raw_path.lstrip("./")).resolve()
+                DB_URL: str = f"sqlite:///{resolved.as_posix()}"
+            else:
+                DB_URL = _RAW_DB_URL
+        else:
+            DB_URL = _RAW_DB_URL
+    else:
+        DB_URL = f"sqlite:///{DEFAULT_DB_PATH.as_posix()}"
 
     # News (Naver)
     NAVER_CLIENT_ID: Optional[str] = os.getenv("NAVER_CLIENT_ID")
