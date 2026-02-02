@@ -819,3 +819,59 @@ def admin_lotto_import(
             "status": "error",
             "message": str(e)
         }
+
+
+@app.get("/api/admin/lotto-ml-train")
+def admin_lotto_ml_train(
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_cron_secret)
+) -> dict:
+    """
+    로또 ML 모델 강제 재학습 (수동 트리거용)
+
+    신규 회차 없이도 현재 DB 데이터로 ML 모델을 재학습합니다.
+    """
+    from backend.app.db.models import LottoDraw
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        draws = db.query(LottoDraw).order_by(LottoDraw.draw_no).all()
+        if len(draws) < 100:
+            return {
+                "status": "error",
+                "message": f"데이터 부족: {len(draws)}개 (최소 100개 필요)"
+            }
+
+        draws_dict = [
+            {
+                'draw_no': d.draw_no,
+                'n1': d.n1, 'n2': d.n2, 'n3': d.n3,
+                'n4': d.n4, 'n5': d.n5, 'n6': d.n6,
+                'bonus': d.bonus
+            }
+            for d in draws
+        ]
+
+        from backend.app.services.lotto.ml_trainer import LottoMLTrainer
+        trainer = LottoMLTrainer()
+        result = trainer.train(draws_dict, test_size=0.2)
+
+        logger.info(f"ML 모델 강제 재학습 완료: Acc={result['test_accuracy']:.4f}")
+
+        return {
+            "status": "success",
+            "message": "ML 모델 재학습 완료",
+            "total_draws": len(draws_dict),
+            "train_accuracy": result['train_accuracy'],
+            "test_accuracy": result['test_accuracy'],
+            "ai_weights": result['ai_weights']
+        }
+
+    except Exception as e:
+        logger.error(f"ML 재학습 실패: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "message": str(e)
+        }
