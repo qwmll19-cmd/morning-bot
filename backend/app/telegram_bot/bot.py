@@ -928,6 +928,68 @@ async def collect_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         db.close()
 
 
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """관리자용 통계 조회 명령어"""
+    import os
+    from backend.app.db.session import SessionLocal
+    from backend.app.db.models import Subscriber, MarketDaily, NewsDaily, NotificationLog
+
+    # 관리자 체크
+    admin_chat_id = os.getenv("LOTTO_ADMIN_CHAT_ID", "")
+    user_chat_id = str(update.effective_chat.id)
+
+    if user_chat_id != admin_chat_id:
+        await update.message.reply_text("관리자 전용 명령어입니다.")
+        return
+
+    db = SessionLocal()
+    try:
+        # 구독자 통계
+        total_subscribers = db.query(Subscriber).count()
+        active_subscribers = db.query(Subscriber).filter(Subscriber.subscribed_alert.is_(True)).count()
+
+        # 오늘 날짜
+        kst = timezone(timedelta(hours=9))
+        today = datetime.now(kst).date()
+
+        # 오늘 데이터 수집 여부
+        market_today = db.query(MarketDaily).filter(MarketDaily.date == today).first()
+        news_today_count = db.query(NewsDaily).filter(NewsDaily.date == today).count()
+
+        # 오늘 알림 전송 현황
+        notif_success = db.query(NotificationLog).filter(
+            NotificationLog.scheduled_date == today,
+            NotificationLog.status == "success"
+        ).count()
+        notif_failed = db.query(NotificationLog).filter(
+            NotificationLog.scheduled_date == today,
+            NotificationLog.status == "failed"
+        ).count()
+        notif_pending = db.query(NotificationLog).filter(
+            NotificationLog.scheduled_date == today,
+            NotificationLog.status == "pending_retry"
+        ).count()
+
+        msg = f"📊 시스템 통계 ({today})\n\n"
+        msg += f"👥 구독자\n"
+        msg += f"   전체: {total_subscribers}명\n"
+        msg += f"   활성: {active_subscribers}명\n\n"
+        msg += f"📈 오늘 데이터\n"
+        msg += f"   시장: {'✅ 수집완료' if market_today else '❌ 미수집'}\n"
+        msg += f"   뉴스: {news_today_count}건\n\n"
+        msg += f"📬 오늘 알림 전송\n"
+        msg += f"   성공: {notif_success}건\n"
+        msg += f"   실패: {notif_failed}건\n"
+        msg += f"   대기: {notif_pending}건"
+
+        await update.message.reply_text(msg)
+    except Exception as e:
+        logger.exception("stats_command failed")
+        await update.message.reply_text(f"통계 조회 실패: {e}")
+    finally:
+        db.close()
+
+
 async def metal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """금속 시세 조회 (DB에서) - 전체 금속"""
     from backend.app.db.session import SessionLocal
@@ -1675,6 +1737,7 @@ def _build_application(token: str):
     application.add_handler(CommandHandler("lotto_performance", lotto_performance_command))
     application.add_handler(CommandHandler("set_time", set_time_command))
     application.add_handler(CommandHandler("collect", collect_command))  # 관리자용 수동 수집
+    application.add_handler(CommandHandler("stats", stats_command))  # 관리자용 통계 조회
     application.add_handler(CallbackQueryHandler(on_timeframe_callback, pattern="^tf:"))
     application.add_handler(CallbackQueryHandler(on_crypto_callback, pattern="^crypto_"))
     application.add_handler(CallbackQueryHandler(on_set_time_callback, pattern="^settime:"))
