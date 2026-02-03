@@ -157,13 +157,9 @@ def _run_telegram_bot():
 
 @app.on_event("startup")
 def on_startup() -> None:
-    """FastAPI 시작 시 스케줄러 및 텔레그램 봇 실행"""
+    """FastAPI 시작 시 스케줄러 실행 (봇은 별도 프로세스로 실행됨)"""
     start_scheduler()
-
-    # 텔레그램 봇을 백그라운드 스레드에서 실행
-    bot_thread = threading.Thread(target=_run_telegram_bot, daemon=True)
-    bot_thread.start()
-    logging.info("✅ 텔레그램 봇 백그라운드 스레드 시작")
+    logging.info("✅ 스케줄러 시작 완료")
 
 
 @app.get("/api/health")
