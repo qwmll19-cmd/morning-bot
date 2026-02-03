@@ -155,11 +155,45 @@ def generate_morning_brief(db: Session, target_date: Optional[date_type] = None)
     lines.append("")
     
     if market:
-        # 환율
-        if market.usd_krw:
+        # 환율 (네이버 API 기반 - exchange_rates JSON 우선)
+        exchange_shown = False
+        if market.exchange_rates and isinstance(market.exchange_rates, dict):
+            # 주요 통화만 표시 (USD, EUR, JPY, CNY)
+            main_currencies = [
+                ("USD", "🇺🇸", "미국 달러", "$", 1),
+                ("EUR", "🇪🇺", "유로", "€", 1),
+                ("JPY", "🇯🇵", "일본 엔", "¥", 100),
+                ("CNY", "🇨🇳", "중국 위안", "¥", 1),
+            ]
+            fx_lines = []
+            for currency, flag, name, symbol, unit in main_currencies:
+                rate_data = market.exchange_rates.get(currency, {})
+                if rate_data and rate_data.get("rate"):
+                    rate = rate_data["rate"]
+                    change = rate_data.get("change")
+                    change_pct = rate_data.get("change_pct")
+
+                    unit_str = f"(100)" if unit != 1 else ""
+                    line = f"{flag} {currency}{unit_str}: ₩{rate:,.2f}"
+
+                    if change is not None and change_pct is not None:
+                        emoji = "🔺" if change > 0 else "🔻" if change < 0 else "➖"
+                        sign = "+" if change > 0 else ""
+                        line += f" {emoji}{sign}{change_pct:.2f}%"
+
+                    fx_lines.append(line)
+
+            if fx_lines:
+                lines.append("💱 환율 (네이버 기준)")
+                lines.extend(fx_lines)
+                lines.append("")
+                exchange_shown = True
+
+        # Fallback: 기존 usd_krw 컬럼
+        if not exchange_shown and market.usd_krw:
             lines.append("💱 환율")
             lines.append(f"USD/KRW: {market.usd_krw:,.2f}원")
-            
+
             # 전일대비
             if market.usd_krw_change is not None and market.usd_krw_change_pct is not None:
                 if market.usd_krw_change > 0:
@@ -172,9 +206,9 @@ def generate_morning_brief(db: Session, target_date: Optional[date_type] = None)
                     emoji = "➖"
                     sign = ""
                 lines.append(f"{emoji} 전일대비 {sign}{market.usd_krw_change:.2f}원 ({sign}{market.usd_krw_change_pct:.2f}%)")
-            
+
             lines.append("")
-        
+
         # 비트코인
         lines.append("🪙 비트코인")
         if market.btc_krw:
@@ -187,9 +221,9 @@ def generate_morning_brief(db: Session, target_date: Optional[date_type] = None)
         lines.append("")
         
         # 주요 지수
-        if market.kospi_index or market.nasdaq_index:
+        if market.kospi_index or market.kosdaq_index or market.nasdaq_index or market.sp500_index:
             lines.append("📊 주요 지수")
-            
+
             if market.kospi_index:
                 lines.append(f"KOSPI: {market.kospi_index:,.2f}")
                 # 전일대비
@@ -197,7 +231,15 @@ def generate_morning_brief(db: Session, target_date: Optional[date_type] = None)
                     emoji = "🔺" if market.kospi_index_change > 0 else "🔻" if market.kospi_index_change < 0 else "➖"
                     sign = "+" if market.kospi_index_change > 0 else ""
                     lines.append(f"   {emoji} {sign}{market.kospi_index_change:.2f} ({sign}{market.kospi_index_change_pct:.2f}%)")
-            
+
+            if market.kosdaq_index:
+                lines.append(f"KOSDAQ: {market.kosdaq_index:,.2f}")
+                # 전일대비
+                if market.kosdaq_index_change is not None and market.kosdaq_index_change_pct is not None:
+                    emoji = "🔺" if market.kosdaq_index_change > 0 else "🔻" if market.kosdaq_index_change < 0 else "➖"
+                    sign = "+" if market.kosdaq_index_change > 0 else ""
+                    lines.append(f"   {emoji} {sign}{market.kosdaq_index_change:.2f} ({sign}{market.kosdaq_index_change_pct:.2f}%)")
+
             if market.nasdaq_index:
                 lines.append(f"나스닥100: {market.nasdaq_index:,.2f}")
                 # 전일대비
@@ -205,7 +247,15 @@ def generate_morning_brief(db: Session, target_date: Optional[date_type] = None)
                     emoji = "🔺" if market.nasdaq_index_change > 0 else "🔻" if market.nasdaq_index_change < 0 else "➖"
                     sign = "+" if market.nasdaq_index_change > 0 else ""
                     lines.append(f"   {emoji} {sign}{market.nasdaq_index_change:.2f} ({sign}{market.nasdaq_index_change_pct:.2f}%)")
-            
+
+            if market.sp500_index:
+                lines.append(f"S&P500: {market.sp500_index:,.2f}")
+                # 전일대비
+                if market.sp500_index_change is not None and market.sp500_index_change_pct is not None:
+                    emoji = "🔺" if market.sp500_index_change > 0 else "🔻" if market.sp500_index_change < 0 else "➖"
+                    sign = "+" if market.sp500_index_change > 0 else ""
+                    lines.append(f"   {emoji} {sign}{market.sp500_index_change:.2f} ({sign}{market.sp500_index_change_pct:.2f}%)")
+
             lines.append("")
         
         # KOSPI Top5
@@ -215,17 +265,35 @@ def generate_morning_brief(db: Session, target_date: Optional[date_type] = None)
                 name = stock.get("name", "")
                 price = stock.get("price", "")
                 change_rate = stock.get("change_rate", "")
-                
+
                 if change_rate and "+" in str(change_rate):
                     emoji = "🟢"
                 elif change_rate and "-" in str(change_rate):
                     emoji = "🔴"
                 else:
                     emoji = "⚪"
-                
+
                 lines.append(f"{idx}. {name} {price} {emoji} {change_rate}")
             lines.append("")
-        
+
+        # KOSDAQ Top5
+        if market.kosdaq_top5 and isinstance(market.kosdaq_top5, list):
+            lines.append("📈 KOSDAQ Top5")
+            for idx, stock in enumerate(market.kosdaq_top5[:5], 1):
+                name = stock.get("name", "")
+                price = stock.get("price", "")
+                change_rate = stock.get("change_rate", "")
+
+                if change_rate and "+" in str(change_rate):
+                    emoji = "🟢"
+                elif change_rate and "-" in str(change_rate):
+                    emoji = "🔴"
+                else:
+                    emoji = "⚪"
+
+                lines.append(f"{idx}. {name} {price} {emoji} {change_rate}")
+            lines.append("")
+
         # 금속 시세 (확장 버전)
         if market.gold_usd and market.usd_krw:
             lines.append("🥇 금속 시세")
