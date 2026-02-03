@@ -1011,6 +1011,79 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         db.close()
 
 
+async def restore_subscribers_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """관리자용 구독자 복원 명령어 - 로컬 DB에서 가져온 구독자 목록을 Render DB에 추가"""
+    import os
+    from backend.app.db.session import SessionLocal
+    from backend.app.db.models import Subscriber
+
+    # 관리자 체크
+    admin_chat_id = os.getenv("LOTTO_ADMIN_CHAT_ID", "")
+    user_chat_id = str(update.effective_chat.id)
+
+    if user_chat_id != admin_chat_id:
+        await update.message.reply_text("관리자 전용 명령어입니다.")
+        return
+
+    # 로컬 SQLite에서 가져온 구독자 목록 (2026-02-03 기준)
+    local_subscribers = [
+        {"chat_id": "358553338", "custom_time": "09:10", "created_at": "2025-12-29"},
+        {"chat_id": "1491178873", "custom_time": "09:10", "created_at": "2025-12-31"},
+        {"chat_id": "5175083233", "custom_time": "09:10", "created_at": "2026-01-03"},
+        {"chat_id": "1663252440", "custom_time": "09:10", "created_at": "2026-01-17"},
+        {"chat_id": "8396696639", "custom_time": "09:10", "created_at": "2026-01-17"},
+        {"chat_id": "273256976", "custom_time": "09:10", "created_at": "2026-01-21"},
+        {"chat_id": "2039777089", "custom_time": "09:10", "created_at": "2026-01-21"},
+        {"chat_id": "5142436956", "custom_time": "09:10", "created_at": "2026-01-21"},
+        {"chat_id": "969601726", "custom_time": "09:10", "created_at": "2026-01-22"},
+        {"chat_id": "8523886085", "custom_time": "09:10", "created_at": "2026-01-22"},
+    ]
+
+    db = SessionLocal()
+    added_count = 0
+    skipped_count = 0
+
+    try:
+        for sub_data in local_subscribers:
+            chat_id = sub_data["chat_id"]
+
+            # 이미 존재하는지 확인
+            existing = db.query(Subscriber).filter(Subscriber.chat_id == chat_id).first()
+
+            if existing:
+                skipped_count += 1
+            else:
+                new_sub = Subscriber(
+                    chat_id=chat_id,
+                    subscribed_alert=True,
+                    custom_time=sub_data["custom_time"]
+                )
+                db.add(new_sub)
+                added_count += 1
+
+        db.commit()
+
+        # 스케줄러에 새 구독자 등록
+        if added_count > 0:
+            try:
+                from backend.app.scheduler.jobs import schedule_user_alerts
+                schedule_user_alerts()
+            except Exception as e:
+                logger.warning(f"스케줄러 등록 실패: {e}")
+
+        msg = f"✅ 구독자 복원 완료\n\n"
+        msg += f"➕ 추가됨: {added_count}명\n"
+        msg += f"⏭️ 건너뜀 (이미 존재): {skipped_count}명\n"
+        msg += f"📊 총 시도: {len(local_subscribers)}명"
+
+        await update.message.reply_text(msg)
+    except Exception as e:
+        logger.exception("restore_subscribers_command failed")
+        await update.message.reply_text(f"구독자 복원 실패: {e}")
+    finally:
+        db.close()
+
+
 async def metal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """금속 시세 조회 (DB에서) - 전체 금속"""
     from backend.app.db.session import SessionLocal
@@ -1759,6 +1832,7 @@ def _build_application(token: str):
     application.add_handler(CommandHandler("set_time", set_time_command))
     application.add_handler(CommandHandler("collect", collect_command))  # 관리자용 수동 수집
     application.add_handler(CommandHandler("stats", stats_command))  # 관리자용 통계 조회
+    application.add_handler(CommandHandler("restore_subscribers", restore_subscribers_command))  # 관리자용 구독자 복원
     application.add_handler(CallbackQueryHandler(on_timeframe_callback, pattern="^tf:"))
     application.add_handler(CallbackQueryHandler(on_crypto_callback, pattern="^crypto_"))
     application.add_handler(CallbackQueryHandler(on_set_time_callback, pattern="^settime:"))
