@@ -1084,6 +1084,57 @@ async def restore_subscribers_command(update: Update, context: ContextTypes.DEFA
         db.close()
 
 
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """관리자용 전체 공지 명령어 - 모든 구독자에게 메시지 전송"""
+    import os
+    from backend.app.db.session import SessionLocal
+    from backend.app.db.models import Subscriber
+
+    # 관리자 체크
+    admin_chat_id = os.getenv("LOTTO_ADMIN_CHAT_ID", "")
+    user_chat_id = str(update.effective_chat.id)
+
+    if user_chat_id != admin_chat_id:
+        await update.message.reply_text("관리자 전용 명령어입니다.")
+        return
+
+    # 메시지 추출 (/broadcast 뒤의 텍스트)
+    if not context.args:
+        await update.message.reply_text("사용법: /broadcast [메시지 내용]")
+        return
+
+    message = " ".join(context.args)
+
+    db = SessionLocal()
+    success_count = 0
+    fail_count = 0
+
+    try:
+        subscribers = db.query(Subscriber).filter(Subscriber.subscribed_alert.is_(True)).all()
+
+        for sub in subscribers:
+            try:
+                await context.bot.send_message(
+                    chat_id=sub.chat_id,
+                    text=message
+                )
+                success_count += 1
+            except Exception as e:
+                logger.warning(f"broadcast to {sub.chat_id} failed: {e}")
+                fail_count += 1
+
+        await update.message.reply_text(
+            f"📢 공지 전송 완료\n\n"
+            f"✅ 성공: {success_count}명\n"
+            f"❌ 실패: {fail_count}명"
+        )
+    except Exception as e:
+        logger.exception("broadcast_command failed")
+        await update.message.reply_text(f"공지 전송 실패: {e}")
+    finally:
+        db.close()
+
+
 async def metal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """금속 시세 조회 (DB에서) - 전체 금속"""
     from backend.app.db.session import SessionLocal
@@ -1833,6 +1884,7 @@ def _build_application(token: str):
     application.add_handler(CommandHandler("collect", collect_command))  # 관리자용 수동 수집
     application.add_handler(CommandHandler("stats", stats_command))  # 관리자용 통계 조회
     application.add_handler(CommandHandler("restore_subscribers", restore_subscribers_command))  # 관리자용 구독자 복원
+    application.add_handler(CommandHandler("broadcast", broadcast_command))  # 관리자용 전체 공지
     application.add_handler(CallbackQueryHandler(on_timeframe_callback, pattern="^tf:"))
     application.add_handler(CallbackQueryHandler(on_crypto_callback, pattern="^crypto_"))
     application.add_handler(CallbackQueryHandler(on_set_time_callback, pattern="^settime:"))
