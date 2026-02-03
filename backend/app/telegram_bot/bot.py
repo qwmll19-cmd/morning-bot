@@ -911,12 +911,16 @@ async def collect_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # 1. 시장 데이터 수집
         market = collect_market_daily(db)
         msg = f"시장 데이터 수집 완료\n"
-        msg += f"- USD/KRW: {market.usd_krw:,.2f}\n" if market.usd_krw else ""
+        msg += f"- USD/KRW: {market.usd_krw:,.2f}\n" if market.usd_krw else "- USD/KRW: NULL\n"
         msg += f"- exchange_rates: {'OK' if market.exchange_rates else 'NULL'}\n"
+        msg += f"- KOSPI: {market.kospi_index:,.2f}\n" if market.kospi_index else "- KOSPI: NULL\n"
+        msg += f"- KOSDAQ: {market.kosdaq_index:,.2f}\n" if market.kosdaq_index else "- KOSDAQ: NULL\n"
+        msg += f"- S&P500: {market.sp500_index:,.2f}\n" if market.sp500_index else "- S&P500: NULL\n"
+        msg += f"- 나스닥100: {market.nasdaq_index:,.2f}\n" if market.nasdaq_index else "- 나스닥100: NULL\n"
 
         # 2. 전일대비 계산
         calculate_daily_changes(db)
-        msg += "전일대비 계산 완료"
+        msg += "\n전일대비 계산 완료"
 
         await update.message.reply_text(msg)
     except Exception as e:
