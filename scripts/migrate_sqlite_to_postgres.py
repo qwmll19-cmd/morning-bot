@@ -130,7 +130,8 @@ def migrate():
 
             col_names = [col[1] for col in schema]
             placeholders = ", ".join([f":{c}" for c in col_names])
-            insert_sql = f'INSERT INTO "{table_name}" ({", ".join([f\'"{c}\'' for c in col_names])}) VALUES ({placeholders})'
+            quoted_cols = ", ".join([f'"{c}"' for c in col_names])
+            insert_sql = f'INSERT INTO "{table_name}" ({quoted_cols}) VALUES ({placeholders})'
 
             # 배치 삽입
             batch_size = 500

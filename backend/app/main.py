@@ -384,18 +384,17 @@ def collect_market_data(db: Session = Depends(get_db)) -> dict:
 @app.get("/api/collect/news")
 def collect_news_data(db: Session = Depends(get_db)) -> dict:
     """
-    뉴스 데이터 수집 (Top5)
+    뉴스 데이터 수집 (v3 - 언론사별 수집 + 핫 점수)
     수동으로 데이터 수집할 때 사용
     """
     try:
-        from backend.app.collectors.news_collector import build_daily_top5
-        
-        result = build_daily_top5(db)
-        
+        from backend.app.collectors.news_collector_v3 import build_daily_top5_v3
+
+        build_daily_top5_v3(db)
+
         return {
             "status": "success",
-            "message": f"News collected: {len(result)} items",
-            "count": len(result)
+            "message": "News collected with v3 system"
         }
     except Exception as e:
         return {
