@@ -36,6 +36,53 @@ else:
 # ---- DB 초기화 ----
 Base.metadata.create_all(bind=engine)
 
+# ---- DB 마이그레이션 (새 컬럼 추가) ----
+def run_db_migrations():
+    """새로 추가된 컬럼이 없으면 자동으로 추가"""
+    from sqlalchemy import text, inspect
+
+    try:
+        inspector = inspect(engine)
+        columns = [c['name'] for c in inspector.get_columns('market_daily')]
+
+        migrations = []
+
+        # KOSDAQ 컬럼
+        if 'kosdaq_index' not in columns:
+            migrations.append("ALTER TABLE market_daily ADD COLUMN kosdaq_index FLOAT")
+        if 'kosdaq_top5' not in columns:
+            migrations.append("ALTER TABLE market_daily ADD COLUMN kosdaq_top5 JSON")
+        if 'kosdaq_index_change' not in columns:
+            migrations.append("ALTER TABLE market_daily ADD COLUMN kosdaq_index_change FLOAT")
+        if 'kosdaq_index_change_pct' not in columns:
+            migrations.append("ALTER TABLE market_daily ADD COLUMN kosdaq_index_change_pct FLOAT")
+
+        # S&P500 컬럼
+        if 'sp500_index' not in columns:
+            migrations.append("ALTER TABLE market_daily ADD COLUMN sp500_index FLOAT")
+        if 'sp500_index_change' not in columns:
+            migrations.append("ALTER TABLE market_daily ADD COLUMN sp500_index_change FLOAT")
+        if 'sp500_index_change_pct' not in columns:
+            migrations.append("ALTER TABLE market_daily ADD COLUMN sp500_index_change_pct FLOAT")
+
+        if migrations:
+            logging.info(f"DB 마이그레이션 필요: {len(migrations)}개 컬럼 추가")
+            with engine.connect() as conn:
+                for sql in migrations:
+                    try:
+                        conn.execute(text(sql))
+                        logging.info(f"✅ {sql}")
+                    except Exception as e:
+                        logging.warning(f"⚠️ {sql}: {e}")
+                conn.commit()
+            logging.info("DB 마이그레이션 완료")
+        else:
+            logging.info("DB 마이그레이션 불필요 (모든 컬럼 존재)")
+    except Exception as e:
+        logging.error(f"DB 마이그레이션 실패: {e}")
+
+run_db_migrations()
+
 app = FastAPI(title="Morning Bot Backend")
 
 
