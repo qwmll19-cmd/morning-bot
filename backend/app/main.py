@@ -122,18 +122,36 @@ class TodaySummaryResponse(BaseModel):
     summary_comment: Optional[str] = None
 
 
+# ---- 봇 상태 추적 ----
+_bot_status = {
+    "started": False,
+    "running": False,
+    "error": None,
+    "error_traceback": None
+}
+
+
 # ---- 이벤트 & 헬스체크 ----
 def _run_telegram_bot():
     """텔레그램 봇을 백그라운드 스레드에서 실행 (새 이벤트 루프 생성)"""
     import asyncio
+    import traceback
+    global _bot_status
+
+    _bot_status["started"] = True
+
     try:
         # 새 스레드에서는 새 이벤트 루프 필요
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
         from backend.app.telegram_bot.bot import main as bot_main
+        _bot_status["running"] = True
         bot_main()
     except Exception as e:
+        _bot_status["error"] = str(e)
+        _bot_status["error_traceback"] = traceback.format_exc()
+        _bot_status["running"] = False
         logging.error(f"텔레그램 봇 실행 실패: {e}", exc_info=True)
 
 
@@ -167,6 +185,10 @@ def debug_bot_status() -> dict:
         "telegram_token_exists": token_exists,
         "telegram_token_preview": token_preview,
         "env_telegram_token_exists": bool(os.getenv("TELEGRAM_TOKEN")),
+        "bot_started": _bot_status["started"],
+        "bot_running": _bot_status["running"],
+        "bot_error": _bot_status["error"],
+        "bot_error_traceback": _bot_status["error_traceback"],
     }
 
 
