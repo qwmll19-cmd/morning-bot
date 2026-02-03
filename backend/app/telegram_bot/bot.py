@@ -168,6 +168,48 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(text, reply_markup=MAIN_KEYBOARD)
 
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """도움말 명령어 - 일반 사용자와 관리자에게 다른 메뉴 표시"""
+    import os
+
+    admin_chat_id = os.getenv("LOTTO_ADMIN_CHAT_ID", "")
+    user_chat_id = str(update.effective_chat.id)
+    is_admin = (user_chat_id == admin_chat_id)
+
+    # 일반 사용자용 명령어
+    help_text = """📋 모닝봇 명령어 안내
+
+📊 시세 조회
+/today - 오늘의 요약 (종합)
+/btc - 비트코인 시세
+/crypto - 암호화폐 시세
+/fx - 환율 정보
+
+🔔 알림 설정
+/subscribe - 알림 구독
+/unsubscribe - 알림 취소
+/set_time - 알림 시간 변경
+/settings - 설정 확인
+
+🎰 로또
+/lotto - 로또 번호 추천
+/lotto_result - 당첨 결과 조회"""
+
+    # 관리자용 추가 명령어
+    if is_admin:
+        help_text += """
+
+━━━━━━━━━━━━━━
+🔐 관리자 전용
+
+/collect - 수동 데이터 수집
+/stats - 구독자/시스템 통계
+/broadcast [메시지] - 전체 공지
+/restore_subscribers - 구독자 복원"""
+
+    await update.message.reply_text(help_text)
+
+
 async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """오늘 요약 - DB에서 직접 가져오기 (09:05 기준)"""
     from backend.app.db.session import SessionLocal
@@ -1874,6 +1916,7 @@ def _build_application(token: str):
     application.add_error_handler(_on_app_error)
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("today", today_command))
     application.add_handler(CommandHandler("btc", btc_command))
     application.add_handler(CommandHandler("crypto", crypto_command))
