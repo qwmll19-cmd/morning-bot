@@ -88,6 +88,13 @@ class MarketDaily(Base):
     nasdaq_index = Column(Float, nullable=True)
     nasdaq_top5 = Column(JSON, nullable=True)
 
+    # KOSDAQ
+    kosdaq_index = Column(Float, nullable=True)
+    kosdaq_top5 = Column(JSON, nullable=True)
+
+    # S&P500
+    sp500_index = Column(Float, nullable=True)
+
     # 글로벌 지수 확장용 (현재는 수집 보류)
     # 예: {"sp500": {...}, "nasdaq100": {...}, "dow": {...}}
     indices = Column(JSON, nullable=True)
@@ -99,6 +106,10 @@ class MarketDaily(Base):
     kospi_index_change_pct = Column(Float, nullable=True)
     nasdaq_index_change = Column(Float, nullable=True)
     nasdaq_index_change_pct = Column(Float, nullable=True)
+    kosdaq_index_change = Column(Float, nullable=True)
+    kosdaq_index_change_pct = Column(Float, nullable=True)
+    sp500_index_change = Column(Float, nullable=True)
+    sp500_index_change_pct = Column(Float, nullable=True)
 
     summary_comment = Column(Text, nullable=True)
 

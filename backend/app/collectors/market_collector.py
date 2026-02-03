@@ -342,61 +342,283 @@ def _fetch_kospi_top5_fallback() -> List[Dict[str, Any]]:
 
 
 def fetch_kospi_index() -> Dict[str, Any]:
-    """네이버에서 KOSPI 지수 크롤링"""
-    url = "https://finance.naver.com/sise/sise_index.naver?code=KOSPI"
-    resp = _get_with_retry(url, timeout=12.0, retries=3)
-    if resp is None:
-        return {}
-
+    """네이버 모바일 API에서 KOSPI 지수 가져오기"""
+    url = "https://m.stock.naver.com/api/index/KOSPI/basic"
     try:
-        html = resp.text
-        soup = BeautifulSoup(html, "html.parser")
-        
-        # 현재가
-        now_val = soup.select_one("#now_value")
-        if not now_val:
-            return {}
-        
-        current = float(now_val.get_text(strip=True).replace(",", ""))
-        
-        # 등락
-        change_val = soup.select_one("#change_value_and_rate span.num")
-        change = 0.0
-        if change_val:
-            change_text = change_val.get_text(strip=True).replace(",", "")
-            change = float(change_text)
-        
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            data = resp.json()
+
+        close_price = data.get("closePrice", "0").replace(",", "")
+        fluctuation = data.get("fluctuationsRatio", "0")
+        compare_price = data.get("compareToPreviousClosePrice", "0").replace(",", "")
+        price_info = data.get("compareToPreviousPrice", {})
+        is_rising = price_info.get("name") == "RISING"
+
         return {
-            "index": current,
-            "change": change
+            "index": float(close_price),
+            "change": float(compare_price) if is_rising else -float(compare_price),
+            "change_pct": float(fluctuation) if is_rising else -float(fluctuation),
         }
     except Exception as e:
         logger.error(f"KOSPI 지수 수집 실패: {e}", exc_info=True)
         return {}
 
 
-def fetch_nasdaq100_index() -> Dict[str, Any]:
-    """네이버에서 나스닥 100 지수 크롤링"""
-    url = "https://finance.naver.com/world/sise.naver?symbol=NAS@NDX"
-    resp = _get_with_retry(url, timeout=12.0, retries=3)
-    if resp is None:
+def fetch_kosdaq_index() -> Dict[str, Any]:
+    """네이버 모바일 API에서 KOSDAQ 지수 가져오기"""
+    url = "https://m.stock.naver.com/api/index/KOSDAQ/basic"
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            data = resp.json()
+
+        close_price = data.get("closePrice", "0").replace(",", "")
+        fluctuation = data.get("fluctuationsRatio", "0")
+        compare_price = data.get("compareToPreviousClosePrice", "0").replace(",", "")
+        price_info = data.get("compareToPreviousPrice", {})
+        is_rising = price_info.get("name") == "RISING"
+
+        return {
+            "index": float(close_price),
+            "change": float(compare_price) if is_rising else -float(compare_price),
+            "change_pct": float(fluctuation) if is_rising else -float(fluctuation),
+        }
+    except Exception as e:
+        logger.error(f"KOSDAQ 지수 수집 실패: {e}", exc_info=True)
         return {}
 
+
+def fetch_sp500_index() -> Dict[str, Any]:
+    """네이버 API에서 S&P500 지수 가져오기"""
+    url = "https://api.stock.naver.com/index/.INX/basic"
     try:
-        html = resp.text
-        soup = BeautifulSoup(html, "html.parser")
-        
-        # em 태그 사용
-        em_tags = soup.select("em.no_down, em.no_up")
-        if len(em_tags) < 2:
-            return {}
-        
-        current = float(em_tags[0].get_text().strip().replace(",", ""))
-        change = float(em_tags[1].get_text().strip().replace(",", ""))
-        
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            data = resp.json()
+
+        close_price = data.get("closePrice", "0").replace(",", "")
+        fluctuation = data.get("fluctuationsRatio", "0")
+        compare_price = data.get("compareToPreviousClosePrice", "0").replace(",", "")
+        price_info = data.get("compareToPreviousPrice", {})
+        is_rising = price_info.get("name") == "RISING"
+
         return {
-            "index": current,
-            "change": change
+            "index": float(close_price),
+            "change": float(compare_price) if is_rising else -float(compare_price),
+            "change_pct": float(fluctuation) if is_rising else -float(fluctuation),
+        }
+    except Exception as e:
+        logger.error(f"S&P500 지수 수집 실패: {e}", exc_info=True)
+        return {}
+
+
+def fetch_kosdaq_top5() -> List[Dict[str, Any]]:
+    """네이버 모바일 API에서 KOSDAQ 시가총액 상위 5종목을 가져옵니다."""
+    url = "https://m.stock.naver.com/api/stocks/marketValue/KOSDAQ?page=1&pageSize=5"
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        logger.warning(f"KOSDAQ TOP5 모바일 API 실패: {e}")
+        return []
+
+    stocks = data.get("stocks", [])
+    top5: List[Dict[str, Any]] = []
+
+    for stock in stocks[:5]:
+        name = stock.get("stockName", "")
+        price = stock.get("closePrice", "")
+        compare_price = stock.get("compareToPreviousClosePrice", "0")
+        price_info = stock.get("compareToPreviousPrice", {})
+        price_text = price_info.get("text", "")
+        fluctuation = stock.get("fluctuationsRatio", "0")
+
+        if price_text == "상승":
+            change = f"상승{compare_price}"
+            change_rate = f"+{fluctuation}%"
+        elif price_text == "하락":
+            change = f"하락{compare_price}"
+            change_rate = f"-{fluctuation}%"
+        else:
+            change = f"보합{compare_price}"
+            change_rate = f"{fluctuation}%"
+
+        top5.append({
+            "name": name,
+            "price": price,
+            "change": change,
+            "change_rate": change_rate,
+        })
+
+    return top5
+
+
+def fetch_us_indices() -> List[Dict[str, Any]]:
+    """네이버 API에서 미국 주요 지수 가져오기"""
+    indices = [
+        (".DJI", "다우존스"),
+        (".IXIC", "나스닥"),
+        (".INX", "S&P500"),
+        (".NDX", "나스닥100"),
+        (".SOX", "필라델피아반도체"),
+        (".VIX", "VIX공포지수"),
+    ]
+
+    results = []
+    for code, name in indices:
+        try:
+            url = f"https://api.stock.naver.com/index/{code}/basic"
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                resp.raise_for_status()
+                data = resp.json()
+
+            close_price = data.get("closePrice", "0").replace(",", "")
+            fluctuation = data.get("fluctuationsRatio", "0")
+            price_info = data.get("compareToPreviousPrice", {})
+            is_rising = price_info.get("name") == "RISING"
+
+            sign = "+" if is_rising else "-"
+            results.append({
+                "name": name,
+                "price": close_price,
+                "change_rate": f"{sign}{fluctuation}%",
+            })
+        except Exception as e:
+            logger.warning(f"미국 지수 {name} 수집 실패: {e}")
+
+    return results
+
+
+def fetch_asian_indices() -> List[Dict[str, Any]]:
+    """네이버 API에서 아시아 주요 지수 가져오기"""
+    indices = [
+        (".N225", "니케이225"),
+        (".HSI", "항셍"),
+        (".SSEC", "상해종합"),
+    ]
+
+    results = []
+    for code, name in indices:
+        try:
+            url = f"https://api.stock.naver.com/index/{code}/basic"
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                resp.raise_for_status()
+                data = resp.json()
+
+            close_price = data.get("closePrice", "0").replace(",", "")
+            fluctuation = data.get("fluctuationsRatio", "0")
+            price_info = data.get("compareToPreviousPrice", {})
+            is_rising = price_info.get("name") == "RISING"
+
+            sign = "+" if is_rising else "-"
+            results.append({
+                "name": name,
+                "price": close_price,
+                "change_rate": f"{sign}{fluctuation}%",
+            })
+        except Exception as e:
+            logger.warning(f"아시아 지수 {name} 수집 실패: {e}")
+
+    return results
+
+
+def fetch_european_indices() -> List[Dict[str, Any]]:
+    """네이버 API에서 유럽 주요 지수 가져오기"""
+    indices = [
+        (".GDAXI", "독일DAX"),
+        (".FTSE", "영국FTSE"),
+    ]
+
+    results = []
+    for code, name in indices:
+        try:
+            url = f"https://api.stock.naver.com/index/{code}/basic"
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                resp.raise_for_status()
+                data = resp.json()
+
+            close_price = data.get("closePrice", "0").replace(",", "")
+            fluctuation = data.get("fluctuationsRatio", "0")
+            price_info = data.get("compareToPreviousPrice", {})
+            is_rising = price_info.get("name") == "RISING"
+
+            sign = "+" if is_rising else "-"
+            results.append({
+                "name": name,
+                "price": close_price,
+                "change_rate": f"{sign}{fluctuation}%",
+            })
+        except Exception as e:
+            logger.warning(f"유럽 지수 {name} 수집 실패: {e}")
+
+    return results
+
+
+def fetch_us_stocks() -> List[Dict[str, Any]]:
+    """네이버 API에서 미국 주요 개별주식 가져오기"""
+    stocks = [
+        ("AAPL.O", "애플"),
+        ("TSLA.O", "테슬라"),
+        ("NVDA.O", "엔비디아"),
+        ("MSFT.O", "마이크로소프트"),
+        ("AMZN.O", "아마존"),
+    ]
+
+    results = []
+    for code, name in stocks:
+        try:
+            url = f"https://api.stock.naver.com/stock/{code}/basic"
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                resp.raise_for_status()
+                data = resp.json()
+
+            close_price = data.get("closePrice", "0").replace(",", "")
+            fluctuation = data.get("fluctuationsRatio", "0")
+            price_info = data.get("compareToPreviousPrice", {})
+            is_rising = price_info.get("name") == "RISING"
+
+            sign = "+" if is_rising else "-"
+            results.append({
+                "name": name,
+                "price": f"${close_price}",
+                "change_rate": f"{sign}{fluctuation}%",
+            })
+        except Exception as e:
+            logger.warning(f"미국 주식 {name} 수집 실패: {e}")
+
+    return results
+
+
+def fetch_nasdaq100_index() -> Dict[str, Any]:
+    """네이버 API에서 나스닥 100 지수 가져오기"""
+    url = "https://api.stock.naver.com/index/.NDX/basic"
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            data = resp.json()
+
+        close_price = data.get("closePrice", "0").replace(",", "")
+        fluctuation = data.get("fluctuationsRatio", "0")
+        compare_price = data.get("compareToPreviousClosePrice", "0").replace(",", "")
+        price_info = data.get("compareToPreviousPrice", {})
+        is_rising = price_info.get("name") == "RISING"
+
+        return {
+            "index": float(close_price),
+            "change": float(compare_price) if is_rising else -float(compare_price),
+            "change_pct": float(fluctuation) if is_rising else -float(fluctuation),
         }
     except Exception as e:
         logger.error(f"나스닥100 지수 수집 실패: {e}", exc_info=True)
@@ -416,10 +638,13 @@ def collect_market_daily(db: Session) -> MarketDaily:
     metals = fetch_all_metals_from_metalsdev()
     
     kospi_top5 = fetch_kospi_top5()
-    
-    # KOSPI/나스닥 지수 수집
+    kosdaq_top5 = fetch_kosdaq_top5()
+
+    # KOSPI/KOSDAQ/나스닥/S&P500 지수 수집
     kospi_data = fetch_kospi_index()
+    kosdaq_data = fetch_kosdaq_index()
     nasdaq_data = fetch_nasdaq100_index()
+    sp500_data = fetch_sp500_index()
     
     # BTC KRW 계산 (USD * 환율)
     if btc_usd and usd_krw and not btc_krw:
@@ -445,6 +670,7 @@ def collect_market_daily(db: Session) -> MarketDaily:
         btc_usd = _fallback(btc_usd, previous.btc_usd, "btc_usd")
         btc_change_24h = _fallback(btc_change_24h, previous.btc_change_24h, "btc_change_24h")
         kospi_top5 = _fallback(kospi_top5, previous.kospi_top5, "kospi_top5")
+        kosdaq_top5 = _fallback(kosdaq_top5, getattr(previous, 'kosdaq_top5', None), "kosdaq_top5")
 
         if btc_usd and usd_krw and not btc_krw:
             btc_krw = btc_usd * usd_krw
@@ -463,9 +689,13 @@ def collect_market_daily(db: Session) -> MarketDaily:
         }
 
         kospi_index = _fallback(kospi_data.get("index"), previous.kospi_index, "kospi_index")
+        kosdaq_index = _fallback(kosdaq_data.get("index"), getattr(previous, 'kosdaq_index', None), "kosdaq_index")
         nasdaq_index = _fallback(nasdaq_data.get("index"), previous.nasdaq_index, "nasdaq_index")
+        sp500_index = _fallback(sp500_data.get("index"), getattr(previous, 'sp500_index', None), "sp500_index")
         kospi_data = {"index": kospi_index}
+        kosdaq_data = {"index": kosdaq_index}
         nasdaq_data = {"index": nasdaq_index}
+        sp500_data = {"index": sp500_index}
 
         if missing_fields:
             logger.warning("시장 데이터 누락 보정 적용: %s", ", ".join(sorted(set(missing_fields))))
@@ -491,7 +721,10 @@ def collect_market_daily(db: Session) -> MarketDaily:
         
         kospi_index=kospi_data.get("index"),
         kospi_top5=kospi_top5,
+        kosdaq_index=kosdaq_data.get("index"),
+        kosdaq_top5=kosdaq_top5,
         nasdaq_index=nasdaq_data.get("index"),
+        sp500_index=sp500_data.get("index"),
         crypto_usd=None,
         oil_usd=None,
         coffee_usd=None,
@@ -548,7 +781,25 @@ def calculate_daily_changes(db: Session) -> None:
     if market_today.nasdaq_index and market_yesterday.nasdaq_index:
         market_today.nasdaq_index_change = market_today.nasdaq_index - market_yesterday.nasdaq_index
         market_today.nasdaq_index_change_pct = (market_today.nasdaq_index_change / market_yesterday.nasdaq_index) * 100
-    
+
+    # KOSDAQ 전일대비
+    kosdaq_today = getattr(market_today, 'kosdaq_index', None)
+    kosdaq_yesterday = getattr(market_yesterday, 'kosdaq_index', None)
+    if kosdaq_today and kosdaq_yesterday:
+        market_today.kosdaq_index_change = kosdaq_today - kosdaq_yesterday
+        market_today.kosdaq_index_change_pct = (market_today.kosdaq_index_change / kosdaq_yesterday) * 100
+
+    # S&P500 전일대비
+    sp500_today = getattr(market_today, 'sp500_index', None)
+    sp500_yesterday = getattr(market_yesterday, 'sp500_index', None)
+    if sp500_today and sp500_yesterday:
+        market_today.sp500_index_change = sp500_today - sp500_yesterday
+        market_today.sp500_index_change_pct = (market_today.sp500_index_change / sp500_yesterday) * 100
+
     db.commit()
-    
-    logger.info(f"전일대비 계산 완료: USD/KRW {market_today.usd_krw_change:+.2f}, KOSPI {market_today.kospi_index_change:+.2f}, 나스닥 {market_today.nasdaq_index_change:+.2f}")
+
+    # 로그 메시지 (None 처리)
+    usd_change = market_today.usd_krw_change or 0
+    kospi_change = market_today.kospi_index_change or 0
+    nasdaq_change = market_today.nasdaq_index_change or 0
+    logger.info(f"전일대비 계산 완료: USD/KRW {usd_change:+.2f}, KOSPI {kospi_change:+.2f}, 나스닥 {nasdaq_change:+.2f}")

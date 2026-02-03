@@ -323,23 +323,43 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             # 주요 지수
             if market.kospi_index or market.nasdaq_index:
                 lines.append("📊 주요 지수")
-                
+
                 if market.kospi_index:
                     lines.append(f"KOSPI: {market.kospi_index:,.2f}")
-                    # 전일대비
                     if market.kospi_index_change is not None and market.kospi_index_change_pct is not None:
                         emoji = "🔺" if market.kospi_index_change > 0 else "🔻" if market.kospi_index_change < 0 else "➖"
                         sign = "+" if market.kospi_index_change > 0 else ""
                         lines.append(f"   {emoji} {sign}{market.kospi_index_change:.2f} ({sign}{market.kospi_index_change_pct:.2f}%)")
-                
+
+                # KOSDAQ 추가
+                kosdaq_index = getattr(market, 'kosdaq_index', None)
+                if kosdaq_index:
+                    lines.append(f"KOSDAQ: {kosdaq_index:,.2f}")
+                    kosdaq_change = getattr(market, 'kosdaq_index_change', None)
+                    kosdaq_pct = getattr(market, 'kosdaq_index_change_pct', None)
+                    if kosdaq_change is not None and kosdaq_pct is not None:
+                        emoji = "🔺" if kosdaq_change > 0 else "🔻" if kosdaq_change < 0 else "➖"
+                        sign = "+" if kosdaq_change > 0 else ""
+                        lines.append(f"   {emoji} {sign}{kosdaq_change:.2f} ({sign}{kosdaq_pct:.2f}%)")
+
                 if market.nasdaq_index:
                     lines.append(f"나스닥100: {market.nasdaq_index:,.2f}")
-                    # 전일대비
                     if market.nasdaq_index_change is not None and market.nasdaq_index_change_pct is not None:
                         emoji = "🔺" if market.nasdaq_index_change > 0 else "🔻" if market.nasdaq_index_change < 0 else "➖"
                         sign = "+" if market.nasdaq_index_change > 0 else ""
                         lines.append(f"   {emoji} {sign}{market.nasdaq_index_change:.2f} ({sign}{market.nasdaq_index_change_pct:.2f}%)")
-                
+
+                # S&P500 추가
+                sp500_index = getattr(market, 'sp500_index', None)
+                if sp500_index:
+                    lines.append(f"S&P500: {sp500_index:,.2f}")
+                    sp500_change = getattr(market, 'sp500_index_change', None)
+                    sp500_pct = getattr(market, 'sp500_index_change_pct', None)
+                    if sp500_change is not None and sp500_pct is not None:
+                        emoji = "🔺" if sp500_change > 0 else "🔻" if sp500_change < 0 else "➖"
+                        sign = "+" if sp500_change > 0 else ""
+                        lines.append(f"   {emoji} {sign}{sp500_change:.2f} ({sign}{sp500_pct:.2f}%)")
+
                 lines.append("")
                 lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
                 lines.append("")
@@ -1098,96 +1118,109 @@ async def metal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def market_indices_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """시장 지수 조회 - KOSPI/나스닥 + Top5"""
-    from backend.app.db.session import SessionLocal
-    from backend.app.db.models import MarketDaily
-    from datetime import date
-    
-    db = SessionLocal()
-    
+    """시장 지수 조회 - 메뉴 표시"""
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🇺🇸 미국지수", callback_data="mkt:us"),
+            InlineKeyboardButton("🇯🇵🇨🇳 아시아지수", callback_data="mkt:asia"),
+        ],
+        [
+            InlineKeyboardButton("🇪🇺 유럽지수", callback_data="mkt:europe"),
+            InlineKeyboardButton("🇺🇸 미국주식", callback_data="mkt:us_stocks"),
+        ],
+        [
+            InlineKeyboardButton("🇰🇷 KOSPI TOP5", callback_data="mkt:kospi"),
+            InlineKeyboardButton("🇰🇷 KOSDAQ TOP5", callback_data="mkt:kosdaq"),
+        ],
+    ])
+
+    await update.message.reply_text(
+        "📊 시장지수 조회\n\n"
+        "원하시는 항목을 선택해주세요.",
+        reply_markup=keyboard
+    )
+
+
+async def on_market_index_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """시장 지수 콜백 핸들러"""
+    from backend.app.collectors.market_collector import (
+        fetch_us_indices,
+        fetch_asian_indices,
+        fetch_european_indices,
+        fetch_us_stocks,
+        fetch_kospi_top5,
+        fetch_kosdaq_top5,
+    )
+
+    query = update.callback_query
+    await query.answer()
+
+    # callback_data 형식: "mkt:us", "mkt:asia" 등
+    category = query.data.split(":")[1]
+
     try:
-        # 오늘자 MarketDaily 조회
-        market = db.query(MarketDaily).filter(
-            MarketDaily.date == datetime.now(timezone(timedelta(hours=9))).date()
-        ).order_by(MarketDaily.id.desc()).first()
-        
-        if not market:
-            market = db.query(MarketDaily).order_by(
-                MarketDaily.date.desc(),
-                MarketDaily.id.desc()
-            ).first()
-            if not market:
-                await update.message.reply_text(
-                    "📊 시장 지수 데이터가 아직 수집되지 않았습니다.\n\n"
-                    "잠시 후 다시 시도해 주세요."
-                )
-                return
-            logger.warning("market_indices_command fallback to latest market date=%s", market.date)
-        
         lines = []
-        lines.append("📊 시장 지수")
-        lines.append("⚡ LIVE")
-        lines.append("")
-        if market.date != datetime.now(timezone(timedelta(hours=9))).date():
-            lines.append(f"※ 최신 데이터 기준: {market.date}")
-            lines.append("")
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("")
-        
-        # KOSPI 지수
-        if market.kospi_index:
-            lines.append("🇰🇷 KOSPI")
-            lines.append(f"   {market.kospi_index:,.2f}")
-            
-            if market.kospi_index_change is not None and market.kospi_index_change_pct is not None:
-                emoji = "🔺" if market.kospi_index_change > 0 else "🔻" if market.kospi_index_change < 0 else "➖"
-                sign = "+" if market.kospi_index_change > 0 else ""
-                lines.append(f"   {emoji} {sign}{market.kospi_index_change:.2f} ({sign}{market.kospi_index_change_pct:.2f}%)")
-            
-            lines.append("")
-        
-        # 나스닥 지수
-        if market.nasdaq_index:
-            lines.append("🇺🇸 나스닥 100")
-            lines.append(f"   {market.nasdaq_index:,.2f}")
-            
-            if market.nasdaq_index_change is not None and market.nasdaq_index_change_pct is not None:
-                emoji = "🔺" if market.nasdaq_index_change > 0 else "🔻" if market.nasdaq_index_change < 0 else "➖"
-                sign = "+" if market.nasdaq_index_change > 0 else ""
-                lines.append(f"   {emoji} {sign}{market.nasdaq_index_change:.2f} ({sign}{market.nasdaq_index_change_pct:.2f}%)")
-            
-            lines.append("")
-        
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("")
-        
-        # KOSPI Top5
-        if market.kospi_top5 and isinstance(market.kospi_top5, list):
-            lines.append("📈 KOSPI TOP 5")
-            lines.append("")
-            for idx, stock in enumerate(market.kospi_top5[:5], 1):
-                name = stock.get("name", "")
-                price = stock.get("price", "")
-                change = stock.get("change", "")
-                change_rate = stock.get("change_rate", "")
-                
-                # 메달 이모지
-                medal = ["🥇", "🥈", "🥉", "🏅", "🎖️"][idx-1]
-                
-                # 등락 이모지
-                emoji = "🔺" if "+" in str(change_rate) else "🔻" if "-" in str(change_rate) else "➖"
-                
-                lines.append(f"{medal} {idx}위 {name}")
-                lines.append(f"   💵 {price}")
-                lines.append(f"   {emoji} {change} ({change_rate})")
-                lines.append("")
-        
-        await update.message.reply_text("\n".join(lines))
-    except Exception:
-        logger.exception("market_indices_command failed")
-        await update.message.reply_text("📊 시장 지수 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
-    finally:
-        db.close()
+
+        if category == "us":
+            lines.append("🇺🇸 미국 주요 지수")
+            lines.append("━━━━━━━━━━━━━━━━━━━━")
+            indices = fetch_us_indices()
+            for idx in indices:
+                emoji = "🔺" if "+" in idx["change_rate"] else "🔻" if "-" in idx["change_rate"] else "➖"
+                lines.append(f"{emoji} {idx['name']}: {idx['price']} ({idx['change_rate']})")
+
+        elif category == "asia":
+            lines.append("🇯🇵🇨🇳🇭🇰 아시아 주요 지수")
+            lines.append("━━━━━━━━━━━━━━━━━━━━")
+            indices = fetch_asian_indices()
+            for idx in indices:
+                emoji = "🔺" if "+" in idx["change_rate"] else "🔻" if "-" in idx["change_rate"] else "➖"
+                lines.append(f"{emoji} {idx['name']}: {idx['price']} ({idx['change_rate']})")
+
+        elif category == "europe":
+            lines.append("🇪🇺 유럽 주요 지수")
+            lines.append("━━━━━━━━━━━━━━━━━━━━")
+            indices = fetch_european_indices()
+            for idx in indices:
+                emoji = "🔺" if "+" in idx["change_rate"] else "🔻" if "-" in idx["change_rate"] else "➖"
+                lines.append(f"{emoji} {idx['name']}: {idx['price']} ({idx['change_rate']})")
+
+        elif category == "us_stocks":
+            lines.append("🇺🇸 미국 주요 개별주식")
+            lines.append("━━━━━━━━━━━━━━━━━━━━")
+            stocks = fetch_us_stocks()
+            for stock in stocks:
+                emoji = "🔺" if "+" in stock["change_rate"] else "🔻" if "-" in stock["change_rate"] else "➖"
+                lines.append(f"{emoji} {stock['name']}: {stock['price']} ({stock['change_rate']})")
+
+        elif category == "kospi":
+            lines.append("🇰🇷 KOSPI 시가총액 TOP 5")
+            lines.append("━━━━━━━━━━━━━━━━━━━━")
+            stocks = fetch_kospi_top5()
+            for idx, stock in enumerate(stocks[:5], 1):
+                medal = ["🥇", "🥈", "🥉", "🏅", "🎖️"][idx - 1]
+                emoji = "🔺" if "+" in str(stock.get("change_rate", "")) else "🔻" if "-" in str(stock.get("change_rate", "")) else "➖"
+                lines.append(f"{medal} {stock['name']}")
+                lines.append(f"   💵 {stock['price']} {emoji} {stock.get('change_rate', '')}")
+
+        elif category == "kosdaq":
+            lines.append("🇰🇷 KOSDAQ 시가총액 TOP 5")
+            lines.append("━━━━━━━━━━━━━━━━━━━━")
+            stocks = fetch_kosdaq_top5()
+            for idx, stock in enumerate(stocks[:5], 1):
+                medal = ["🥇", "🥈", "🥉", "🏅", "🎖️"][idx - 1]
+                emoji = "🔺" if "+" in str(stock.get("change_rate", "")) else "🔻" if "-" in str(stock.get("change_rate", "")) else "➖"
+                lines.append(f"{medal} {stock['name']}")
+                lines.append(f"   💵 {stock['price']} {emoji} {stock.get('change_rate', '')}")
+
+        if not lines:
+            lines.append("데이터를 불러올 수 없습니다.")
+
+        await query.edit_message_text("\n".join(lines))
+
+    except Exception as e:
+        logger.exception("on_market_index_callback failed")
+        await query.edit_message_text("📊 시장 지수 조회 중 오류가 발생했습니다.")
 
 
 async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1587,6 +1620,7 @@ def _build_application(token: str):
     application.add_handler(CallbackQueryHandler(on_crypto_callback, pattern="^crypto_"))
     application.add_handler(CallbackQueryHandler(on_set_time_callback, pattern="^settime:"))
     application.add_handler(CallbackQueryHandler(on_news_category_callback, pattern="^news:"))
+    application.add_handler(CallbackQueryHandler(on_market_index_callback, pattern="^mkt:"))
     application.add_handler(CallbackQueryHandler(lotto_generate_callback, pattern="^lotto_gen:"))
     application.add_handler(CallbackQueryHandler(lotto_result_callback, pattern="^lotto_result:"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_buttons))
