@@ -63,6 +63,20 @@ CREATE TABLE market_daily (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 , nasdaq_index REAL, nasdaq_top5 TEXT, platinum_usd REAL, aluminum_usd REAL, nickel_usd REAL, zinc_usd REAL, lead_usd REAL);
 CREATE INDEX idx_market_date ON market_daily(date);
+CREATE TABLE korea_metal_daily (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    metal VARCHAR(20),
+    date DATE,
+    date_text VARCHAR(20),
+    buy_3_75g INTEGER,
+    sell_3_75g INTEGER,
+    sell_18k INTEGER,
+    sell_14k INTEGER,
+    source_url VARCHAR(300),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_korea_metal_daily_metal ON korea_metal_daily(metal);
+CREATE INDEX idx_korea_metal_daily_date ON korea_metal_daily(date);
 CREATE TABLE lotto_stats_cache (
     id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     updated_at TIMESTAMP NOT NULL,

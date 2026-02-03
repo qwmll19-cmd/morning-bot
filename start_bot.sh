@@ -1,19 +1,4 @@
 #!/bin/bash
-# Morning Bot 텔레그램 봇 실행 스크립트
-
-echo "================================================"
-echo "  🤖 Morning Bot - 텔레그램 봇 시작"
-echo "================================================"
-echo ""
-echo "봇을 종료하려면 Ctrl+C를 누르세요."
-echo ""
-echo "------------------------------------------------"
-echo ""
-
-# Python 봇 실행
-python3 -m backend.app.telegram_bot.bot
-
-echo ""
-echo "================================================"
-echo "  봇이 종료되었습니다."
-echo "================================================"
+cd /Users/seobeo1/Downloads/morning-bot
+source venv/bin/activate
+python3 backend/app/main.py

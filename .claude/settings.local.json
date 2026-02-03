@@ -5,7 +5,21 @@
       "Bash(chmod:*)",
       "Bash(python3:*)",
       "Bash(sqlite3:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(./run.sh:*)",
+      "Bash(cat:*)",
+      "Bash(pkill:*)",
+      "Bash(kill:*)",
+      "Bash(xargs kill:*)",
+      "Bash(./venv/bin/pip:*)",
+      "Bash(./venv/bin/python:*)",
+      "Bash(brew install:*)",
+      "Bash(source:*)",
+      "Bash(python test_logic_changes.py:*)",
+      "Bash(python test_20_lines_changes.py:*)",
+      "Bash(python:*)",
+      "Bash(tree:*)",
+      "Bash(open:*)"
     ]
   }
 }

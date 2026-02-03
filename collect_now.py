@@ -7,6 +7,7 @@
 from backend.app.db.session import SessionLocal
 from backend.app.collectors.news_collector_v3 import build_daily_top5_v3
 from backend.app.collectors.market_collector import collect_market_daily
+from backend.app.collectors.koreagoldx_collector import collect_korea_metal_daily
 
 if __name__ == "__main__":
     print("=" * 60)
@@ -24,6 +25,10 @@ if __name__ == "__main__":
         print("2/2 시장 데이터 수집 중...")
         collect_market_daily(db)
         print("  ✓ 완료")
+
+        print("3/3 국내 금속 시세 수집 중...")
+        collected = collect_korea_metal_daily(db)
+        print(f"  ✓ 완료 ({len(collected)}건)")
 
         # 전일대비 계산까지 수행 (수동 실행 시에도 표시되도록)
         from backend.app.collectors.market_collector import calculate_daily_changes

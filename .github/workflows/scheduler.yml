@@ -1,0 +1,173 @@
+name: Morning Bot Scheduler
+
+on:
+  schedule:
+    # 모든 시간은 UTC 기준 (KST = UTC + 9)
+
+    # 속보 수집: 매시 55분 (KST 기준)
+    - cron: '55 * * * *'
+
+    # 모닝 브리핑 데이터 수집: KST 09:01 = UTC 00:01
+    - cron: '1 0 * * *'
+
+    # 모닝 브리핑 전송: KST 09:10 = UTC 00:10
+    - cron: '10 0 * * *'
+
+    # 속보 배치 전송: KST 12:00, 18:00, 22:00 = UTC 03:00, 09:00, 13:00
+    - cron: '0 3,9,13 * * *'
+
+    # 로또 업데이트: 매주 토요일 KST 21:00 = UTC 12:00
+    - cron: '0 12 * * 6'
+
+    # 로또 ML 평가: 매주 토요일 KST 22:00 = UTC 13:00
+    - cron: '0 13 * * 6'
+
+  workflow_dispatch:
+    inputs:
+      job_type:
+        description: '실행할 작업'
+        required: true
+        default: 'morning_collect'
+        type: choice
+        options:
+          - morning_collect
+          - morning_send
+          - breaking_collect
+          - breaking_send
+          - lotto_update
+          - lotto_ml_eval
+
+env:
+  TZ: Asia/Seoul
+
+jobs:
+  run-job:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create .env file
+        run: |
+          cat << EOF > .env
+          DB_URL=${{ secrets.DB_URL }}
+          NAVER_CLIENT_ID=${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET=${{ secrets.NAVER_CLIENT_SECRET }}
+          UNIRATE_API_KEY=${{ secrets.UNIRATE_API_KEY }}
+          METALPRICE_API_KEY=${{ secrets.METALPRICE_API_KEY }}
+          METALSDEV_API_KEY=${{ secrets.METALSDEV_API_KEY }}
+          TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
+          BACKEND_BASE_URL=${{ secrets.BACKEND_BASE_URL }}
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          LOTTO_ADMIN_CHAT_ID=${{ secrets.LOTTO_ADMIN_CHAT_ID }}
+          EOF
+
+      - name: Determine job type
+        id: job_type
+        run: |
+          # workflow_dispatch로 수동 실행된 경우
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "type=${{ github.event.inputs.job_type }}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # schedule로 실행된 경우 - 현재 시간 기준으로 판단
+          HOUR=$(TZ=Asia/Seoul date +%H)
+          MINUTE=$(TZ=Asia/Seoul date +%M)
+          DOW=$(TZ=Asia/Seoul date +%u)  # 1=월, 6=토, 7=일
+
+          echo "Current KST: $HOUR:$MINUTE (DOW=$DOW)"
+
+          # 토요일 로또 작업
+          if [ "$DOW" == "6" ]; then
+            if [ "$HOUR" == "21" ] && [ "$MINUTE" -lt "30" ]; then
+              echo "type=lotto_update" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            if [ "$HOUR" == "22" ] && [ "$MINUTE" -lt "30" ]; then
+              echo "type=lotto_ml_eval" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+
+          # 모닝 브리핑
+          if [ "$HOUR" == "09" ] && [ "$MINUTE" -lt "5" ]; then
+            echo "type=morning_collect" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          if [ "$HOUR" == "09" ] && [ "$MINUTE" -ge "5" ] && [ "$MINUTE" -lt "15" ]; then
+            echo "type=morning_send" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # 속보 배치 전송
+          if [ "$HOUR" == "12" ] || [ "$HOUR" == "18" ] || [ "$HOUR" == "22" ]; then
+            if [ "$MINUTE" -lt "5" ]; then
+              echo "type=breaking_send" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+
+          # 매시 55분 속보 수집
+          if [ "$MINUTE" -ge "50" ]; then
+            echo "type=breaking_collect" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # 기본값
+          echo "type=none" >> $GITHUB_OUTPUT
+
+      - name: Run scheduled job
+        if: steps.job_type.outputs.type != 'none'
+        run: |
+          echo "Running job: ${{ steps.job_type.outputs.type }}"
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+
+          job_type = '${{ steps.job_type.outputs.type }}'
+
+          if job_type == 'morning_collect':
+              from backend.app.scheduler.jobs import job_morning_all
+              job_morning_all()
+
+          elif job_type == 'morning_send':
+              from backend.app.scheduler.jobs import job_calculate_changes_and_send
+              job_calculate_changes_and_send()
+
+          elif job_type == 'breaking_collect':
+              from backend.app.scheduler.jobs import job_collect_breaking_news
+              job_collect_breaking_news()
+
+          elif job_type == 'breaking_send':
+              from backend.app.scheduler.jobs import job_send_breaking_batch
+              job_send_breaking_batch()
+
+          elif job_type == 'lotto_update':
+              from backend.app.scheduler.jobs import job_lotto_weekly_update
+              job_lotto_weekly_update()
+
+          elif job_type == 'lotto_ml_eval':
+              from backend.app.scheduler.jobs import job_lotto_performance_evaluation
+              job_lotto_performance_evaluation()
+
+          else:
+              print(f'Unknown job type: {job_type}')
+          "
+
+      - name: Skip notification
+        if: steps.job_type.outputs.type == 'none'
+        run: echo "No matching job for current schedule, skipping..."
