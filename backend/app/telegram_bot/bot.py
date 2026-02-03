@@ -1098,12 +1098,16 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text("관리자 전용 명령어입니다.")
         return
 
-    # 메시지 추출 (/broadcast 뒤의 텍스트)
-    if not context.args:
+    # 메시지 추출 (/broadcast 뒤의 텍스트, 줄바꿈 유지)
+    full_text = update.message.text or ""
+    if full_text.startswith("/broadcast"):
+        message = full_text[len("/broadcast"):].strip()
+    else:
+        message = ""
+
+    if not message:
         await update.message.reply_text("사용법: /broadcast [메시지 내용]")
         return
-
-    message = " ".join(context.args)
 
     db = SessionLocal()
     success_count = 0
