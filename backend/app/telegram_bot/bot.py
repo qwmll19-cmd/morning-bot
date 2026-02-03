@@ -931,6 +931,7 @@ async def collect_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """관리자용 통계 조회 명령어"""
     import os
+    from sqlalchemy import func, distinct
     from backend.app.db.session import SessionLocal
     from backend.app.db.models import Subscriber, MarketDaily, NewsDaily, NotificationLog
 
@@ -947,6 +948,12 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # 구독자 통계
         total_subscribers = db.query(Subscriber).count()
         active_subscribers = db.query(Subscriber).filter(Subscriber.subscribed_alert.is_(True)).count()
+
+        # 알림을 받은 적 있는 고유 사용자 수
+        unique_notified_users = db.query(func.count(distinct(NotificationLog.chat_id))).scalar() or 0
+
+        # 전체 알림 발송 횟수
+        total_notifications = db.query(NotificationLog).count()
 
         # 오늘 날짜
         kst = timezone(timedelta(hours=9))
@@ -970,17 +977,31 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             NotificationLog.status == "pending_retry"
         ).count()
 
+        # 구독자 목록 (chat_id, 알림시간, 활성여부)
+        subscribers = db.query(Subscriber).all()
+
         msg = f"📊 시스템 통계 ({today})\n\n"
-        msg += f"👥 구독자\n"
+        msg += f"👥 구독자 (subscribers 테이블)\n"
         msg += f"   전체: {total_subscribers}명\n"
         msg += f"   활성: {active_subscribers}명\n\n"
+        msg += f"📨 알림 기록 (notification_log)\n"
+        msg += f"   고유 사용자: {unique_notified_users}명\n"
+        msg += f"   총 발송 횟수: {total_notifications}건\n\n"
         msg += f"📈 오늘 데이터\n"
         msg += f"   시장: {'✅ 수집완료' if market_today else '❌ 미수집'}\n"
         msg += f"   뉴스: {news_today_count}건\n\n"
         msg += f"📬 오늘 알림 전송\n"
         msg += f"   성공: {notif_success}건\n"
         msg += f"   실패: {notif_failed}건\n"
-        msg += f"   대기: {notif_pending}건"
+        msg += f"   대기: {notif_pending}건\n\n"
+
+        # 구독자 상세 목록
+        if subscribers:
+            msg += f"📋 구독자 목록:\n"
+            for sub in subscribers:
+                status = "✅" if sub.subscribed_alert else "❌"
+                time_str = sub.custom_time or "09:05"
+                msg += f"   {status} {sub.chat_id} ({time_str})\n"
 
         await update.message.reply_text(msg)
     except Exception as e:
