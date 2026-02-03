@@ -251,7 +251,58 @@ def fetch_all_metals_from_metalsdev() -> Dict[str, Optional[float]]:
 
 
 def fetch_kospi_top5() -> List[Dict[str, Any]]:
-    """네이버 금융 시가총액 상위 페이지에서 KOSPI TOP5 종목을 파싱합니다."""
+    """네이버 모바일 API에서 KOSPI 시가총액 상위 5종목을 가져옵니다.
+
+    해외 IP에서도 접근 가능한 모바일 API 사용 (기존 웹 크롤링 대체)
+    """
+    url = "https://m.stock.naver.com/api/stocks/marketValue/KOSPI?page=1&pageSize=5"
+
+    try:
+        resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        logger.warning(f"KOSPI TOP5 모바일 API 실패: {e}")
+        return _fetch_kospi_top5_fallback()
+
+    stocks = data.get("stocks", [])
+    top5: List[Dict[str, Any]] = []
+
+    for stock in stocks[:5]:
+        name = stock.get("stockName", "")
+        price = stock.get("closePrice", "")
+
+        # 전일비 (예: "9,200" 또는 "-5,100")
+        compare_price = stock.get("compareToPreviousClosePrice", "0")
+        price_info = stock.get("compareToPreviousPrice", {})
+        price_text = price_info.get("text", "")  # "상승" 또는 "하락"
+
+        # 등락률 (예: "6.12")
+        fluctuation = stock.get("fluctuationsRatio", "0")
+
+        # change 포맷: "상승9,200" 또는 "하락5,100"
+        if price_text == "상승":
+            change = f"상승{compare_price}"
+            change_rate = f"+{fluctuation}%"
+        elif price_text == "하락":
+            change = f"하락{compare_price}"
+            change_rate = f"-{fluctuation}%"
+        else:
+            change = f"보합{compare_price}"
+            change_rate = f"{fluctuation}%"
+
+        top5.append({
+            "name": name,
+            "price": price,
+            "change": change,
+            "change_rate": change_rate,
+        })
+
+    return top5
+
+
+def _fetch_kospi_top5_fallback() -> List[Dict[str, Any]]:
+    """모바일 API 실패 시 기존 웹 크롤링으로 폴백"""
     resp = _get_with_retry(NAVER_KOSPI_MARKET_SUM_URL, timeout=12.0, retries=3)
     if resp is None:
         return []
