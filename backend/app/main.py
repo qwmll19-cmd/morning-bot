@@ -1,6 +1,7 @@
 from datetime import date as date_type
 from pathlib import Path
 import logging
+import threading
 from typing import List, Optional
 
 from fastapi import FastAPI, Depends, Query
@@ -122,10 +123,24 @@ class TodaySummaryResponse(BaseModel):
 
 
 # ---- 이벤트 & 헬스체크 ----
+def _run_telegram_bot():
+    """텔레그램 봇을 백그라운드 스레드에서 실행"""
+    try:
+        from backend.app.telegram_bot.bot import main as bot_main
+        bot_main()
+    except Exception as e:
+        logging.error(f"텔레그램 봇 실행 실패: {e}", exc_info=True)
+
+
 @app.on_event("startup")
 def on_startup() -> None:
-    """FastAPI 시작 시 스케줄러 실행"""
+    """FastAPI 시작 시 스케줄러 및 텔레그램 봇 실행"""
     start_scheduler()
+
+    # 텔레그램 봇을 백그라운드 스레드에서 실행
+    bot_thread = threading.Thread(target=_run_telegram_bot, daemon=True)
+    bot_thread.start()
+    logging.info("✅ 텔레그램 봇 백그라운드 스레드 시작")
 
 
 @app.get("/api/health")
@@ -415,6 +430,12 @@ def verify_cron_secret(x_cron_secret: str = Header(default="")) -> None:
     """Cron 요청 인증 (선택적)"""
     if CRON_SECRET and x_cron_secret != CRON_SECRET:
         raise HTTPException(status_code=403, detail="Invalid cron secret")
+
+
+@app.get("/api/cron/keep-alive")
+def cron_keep_alive() -> dict:
+    """10분마다 - Render 슬립 방지 (인증 불필요)"""
+    return {"status": "ok", "message": "Server is alive"}
 
 
 @app.get("/api/cron/morning-collect")
