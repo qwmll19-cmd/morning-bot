@@ -483,9 +483,15 @@ def fetch_us_indices() -> List[Dict[str, Any]]:
             close_price = data.get("closePrice", "0").replace(",", "")
             fluctuation = data.get("fluctuationsRatio", "0")
             price_info = data.get("compareToPreviousPrice", {})
-            is_rising = price_info.get("name") == "RISING"
+            price_name = price_info.get("name", "")
 
-            sign = "+" if is_rising else "-"
+            if price_name == "RISING":
+                sign = "+"
+            elif price_name == "FALLING":
+                sign = "-"
+            else:
+                sign = ""
+
             results.append({
                 "name": name,
                 "price": close_price,
@@ -517,9 +523,15 @@ def fetch_asian_indices() -> List[Dict[str, Any]]:
             close_price = data.get("closePrice", "0").replace(",", "")
             fluctuation = data.get("fluctuationsRatio", "0")
             price_info = data.get("compareToPreviousPrice", {})
-            is_rising = price_info.get("name") == "RISING"
+            price_name = price_info.get("name", "")
 
-            sign = "+" if is_rising else "-"
+            if price_name == "RISING":
+                sign = "+"
+            elif price_name == "FALLING":
+                sign = "-"
+            else:
+                sign = ""
+
             results.append({
                 "name": name,
                 "price": close_price,
@@ -550,9 +562,15 @@ def fetch_european_indices() -> List[Dict[str, Any]]:
             close_price = data.get("closePrice", "0").replace(",", "")
             fluctuation = data.get("fluctuationsRatio", "0")
             price_info = data.get("compareToPreviousPrice", {})
-            is_rising = price_info.get("name") == "RISING"
+            price_name = price_info.get("name", "")
 
-            sign = "+" if is_rising else "-"
+            if price_name == "RISING":
+                sign = "+"
+            elif price_name == "FALLING":
+                sign = "-"
+            else:
+                sign = ""
+
             results.append({
                 "name": name,
                 "price": close_price,
@@ -586,9 +604,15 @@ def fetch_us_stocks() -> List[Dict[str, Any]]:
             close_price = data.get("closePrice", "0").replace(",", "")
             fluctuation = data.get("fluctuationsRatio", "0")
             price_info = data.get("compareToPreviousPrice", {})
-            is_rising = price_info.get("name") == "RISING"
+            price_name = price_info.get("name", "")
 
-            sign = "+" if is_rising else "-"
+            if price_name == "RISING":
+                sign = "+"
+            elif price_name == "FALLING":
+                sign = "-"
+            else:
+                sign = ""
+
             results.append({
                 "name": name,
                 "price": f"${close_price}",
