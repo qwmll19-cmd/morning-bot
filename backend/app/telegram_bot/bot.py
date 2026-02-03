@@ -1627,7 +1627,12 @@ def main() -> None:
     while True:
         application = _build_application(token)
         try:
-            application.run_polling()
+            application.run_polling(
+                drop_pending_updates=True,
+                allowed_updates=["message", "callback_query"],
+                poll_interval=1.0,
+                timeout=30
+            )
             break
         except Exception as e:
             logger.exception("Telegram polling crashed: %s. Retry in %ss", e, retry_delay)
