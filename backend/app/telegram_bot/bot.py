@@ -890,6 +890,42 @@ def _format_exchange_rate_line(currency: str, exchange_rates: dict, market) -> s
     return f"{emoji} {symbol}{unit_text} = ₩{rate:,.2f}{change_text}"
 
 
+async def collect_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """관리자용 수동 데이터 수집 명령어"""
+    import os
+    from backend.app.db.session import SessionLocal
+    from backend.app.collectors.market_collector import collect_market_daily, calculate_daily_changes
+
+    # 관리자 체크 (LOTTO_ADMIN_CHAT_ID)
+    admin_chat_id = os.getenv("LOTTO_ADMIN_CHAT_ID", "")
+    user_chat_id = str(update.effective_chat.id)
+
+    if user_chat_id != admin_chat_id:
+        await update.message.reply_text("관리자 전용 명령어입니다.")
+        return
+
+    await update.message.reply_text("데이터 수집 시작...")
+
+    db = SessionLocal()
+    try:
+        # 1. 시장 데이터 수집
+        market = collect_market_daily(db)
+        msg = f"시장 데이터 수집 완료\n"
+        msg += f"- USD/KRW: {market.usd_krw:,.2f}\n" if market.usd_krw else ""
+        msg += f"- exchange_rates: {'OK' if market.exchange_rates else 'NULL'}\n"
+
+        # 2. 전일대비 계산
+        calculate_daily_changes(db)
+        msg += "전일대비 계산 완료"
+
+        await update.message.reply_text(msg)
+    except Exception as e:
+        logger.exception("collect_command failed")
+        await update.message.reply_text(f"수집 실패: {e}")
+    finally:
+        db.close()
+
+
 async def metal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """금속 시세 조회 (DB에서) - 전체 금속"""
     from backend.app.db.session import SessionLocal
@@ -1636,6 +1672,7 @@ def _build_application(token: str):
     application.add_handler(CommandHandler("lotto_result", lotto_result_command))
     application.add_handler(CommandHandler("lotto_performance", lotto_performance_command))
     application.add_handler(CommandHandler("set_time", set_time_command))
+    application.add_handler(CommandHandler("collect", collect_command))  # 관리자용 수동 수집
     application.add_handler(CallbackQueryHandler(on_timeframe_callback, pattern="^tf:"))
     application.add_handler(CallbackQueryHandler(on_crypto_callback, pattern="^crypto_"))
     application.add_handler(CallbackQueryHandler(on_set_time_callback, pattern="^settime:"))
