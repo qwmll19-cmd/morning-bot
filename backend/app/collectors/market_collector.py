@@ -258,9 +258,10 @@ def fetch_kospi_top5() -> List[Dict[str, Any]]:
     url = "https://m.stock.naver.com/api/stocks/marketValue/KOSPI?page=1&pageSize=5"
 
     try:
-        resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
-        data = resp.json()
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            data = resp.json()
     except Exception as e:
         logger.warning(f"KOSPI TOP5 모바일 API 실패: {e}")
         return _fetch_kospi_top5_fallback()
