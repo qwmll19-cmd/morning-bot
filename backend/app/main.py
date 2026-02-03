@@ -124,8 +124,13 @@ class TodaySummaryResponse(BaseModel):
 
 # ---- 이벤트 & 헬스체크 ----
 def _run_telegram_bot():
-    """텔레그램 봇을 백그라운드 스레드에서 실행"""
+    """텔레그램 봇을 백그라운드 스레드에서 실행 (새 이벤트 루프 생성)"""
+    import asyncio
     try:
+        # 새 스레드에서는 새 이벤트 루프 필요
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
         from backend.app.telegram_bot.bot import main as bot_main
         bot_main()
     except Exception as e:
