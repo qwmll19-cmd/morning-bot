@@ -160,25 +160,25 @@ def generate_morning_brief(db: Session, target_date: Optional[date_type] = None)
         if market.exchange_rates and isinstance(market.exchange_rates, dict):
             # 주요 통화만 표시 (USD, EUR, JPY, CNY)
             main_currencies = [
-                ("USD", "🇺🇸", "미국 달러", "$", 1),
-                ("EUR", "🇪🇺", "유로", "€", 1),
-                ("JPY", "🇯🇵", "일본 엔", "¥", 100),
-                ("CNY", "🇨🇳", "중국 위안", "¥", 1),
+                ("USD", "🇺🇸", "미국 달러", 1),
+                ("EUR", "🇪🇺", "유로", 1),
+                ("JPY", "🇯🇵", "일본 엔", 100),
+                ("CNY", "🇨🇳", "중국 위안", 1),
             ]
             fx_lines = []
-            for currency, flag, name, symbol, unit in main_currencies:
+            for currency, flag, name, unit in main_currencies:
                 rate_data = market.exchange_rates.get(currency, {})
                 if rate_data and rate_data.get("rate"):
                     rate = rate_data["rate"]
                     change = rate_data.get("change")
                     change_pct = rate_data.get("change_pct")
 
-                    unit_str = f"(100)" if unit != 1 else ""
-                    line = f"{flag} {currency}{unit_str}: ₩{rate:,.2f}"
+                    unit_str = f"({unit})" if unit != 1 else ""
+                    line = f"{flag} {name}{unit_str}: ₩{rate:,.2f}"
 
                     if change is not None and change_pct is not None:
                         emoji = "🔺" if change > 0 else "🔻" if change < 0 else "➖"
-                        sign = "+" if change > 0 else ""
+                        sign = "+" if change_pct > 0 else ""
                         line += f" {emoji}{sign}{change_pct:.2f}%"
 
                     fx_lines.append(line)

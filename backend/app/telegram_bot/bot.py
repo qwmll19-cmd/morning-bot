@@ -852,7 +852,7 @@ async def fx_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 def _format_exchange_rate_line(currency: str, exchange_rates: dict, market) -> str:
-    """환율 한 줄 포맷팅 (전일대비 포함)"""
+    """환율 한 줄 포맷팅 (전일대비 포함) - 한국어 통화명 표시"""
     data = exchange_rates.get(currency, {})
 
     rate = data.get("rate")
@@ -860,7 +860,6 @@ def _format_exchange_rate_line(currency: str, exchange_rates: dict, market) -> s
     change_pct = data.get("change_pct")
     unit = data.get("unit", 1)
     emoji = data.get("emoji", "")
-    symbol = data.get("symbol", "")
     name = data.get("name", currency)
 
     # rate가 없으면 레거시 usd_krw 사용 (USD만)
@@ -869,7 +868,6 @@ def _format_exchange_rate_line(currency: str, exchange_rates: dict, market) -> s
         change = getattr(market, 'usd_krw_change', None)
         change_pct = getattr(market, 'usd_krw_change_pct', None)
         emoji = "🇺🇸"
-        symbol = "$"
         name = "미국 달러"
         unit = 1
 
@@ -877,17 +875,17 @@ def _format_exchange_rate_line(currency: str, exchange_rates: dict, market) -> s
         return ""
 
     # 단위 표시 (100엔, 100동, 100루피아)
-    unit_text = f"{unit}" if unit > 1 else "1"
+    unit_text = f"({unit})" if unit > 1 else ""
 
     # 전일대비 포맷
     if change is not None and change_pct is not None:
-        change_emoji = "+" if change > 0 else "" if change < 0 else ""
-        arrow = "▲" if change > 0 else "▼" if change < 0 else "-"
-        change_text = f" {arrow}{abs(change):,.2f} ({change_emoji}{change_pct:.2f}%)"
+        arrow = "🔺" if change > 0 else "🔻" if change < 0 else "➖"
+        sign = "+" if change_pct > 0 else ""
+        change_text = f" {arrow}{sign}{change_pct:.2f}%"
     else:
         change_text = ""
 
-    return f"{emoji} {symbol}{unit_text} = ₩{rate:,.2f}{change_text}"
+    return f"{emoji} {name}{unit_text}: ₩{rate:,.2f}{change_text}"
 
 
 async def collect_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
