@@ -18,6 +18,7 @@ from backend.app.utils.filters import extract_press_from_url, PRESS_BREAKING_CON
 from backend.app.utils.category_keywords import classify_category
 
 NAVER_NEWS_URL = "https://openapi.naver.com/v1/search/news.json"
+KST_TZ = timezone(timedelta(hours=9))
 
 # 20개 언론사
 PRESS_LIST = [
@@ -26,6 +27,26 @@ PRESS_LIST = [
     "연합뉴스", "YTN", "KBS", "SBS", "JTBC",
     "국민일보", "코리아헤럴드", "아이뉴스24", "디지털타임스", "한겨레", "SBS"
 ]
+
+# 카테고리별 검색 키워드 (경제, 문화 뉴스 수집 보장)
+CATEGORY_SEARCH_KEYWORDS = {
+    "economy": [
+        "코스피", "증시", "환율", "금리", "주가", "경제", "부동산", "아파트",
+        "달러", "원화", "채권", "펀드", "매출", "실적", "영업이익", "수출",
+        "GDP", "물가", "인플레", "주택", "전세", "세금", "투자", "기업"
+    ],
+    "culture": [
+        "영화", "전시", "공연", "책", "문화", "미술", "음악회",
+        "개봉", "박스오피스", "영화제", "소설", "출판", "베스트셀러",
+        "박물관", "미술관", "갤러리", "축제"
+    ],
+    "entertainment": [
+        "아이돌", "드라마", "예능", "연예", "걸그룹", "배우",
+        "보이그룹", "가수", "탤런트", "컴백", "데뷔", "신곡",
+        "앨범", "타이틀곡", "뮤비", "뮤직비디오"
+    ],
+    "society": []  # 기본 카테고리이므로 별도 수집 불필요
+}
 
 
 def build_topic_key(title: str) -> str:
@@ -80,10 +101,19 @@ def collect_by_press(db: Session) -> List[NewsDaily]:
     
     from backend.app.utils.dedup import remove_duplicate_news
     
-    today = date.today()
-    now_utc = datetime.now(timezone.utc)
-    min_dt = now_utc - timedelta(hours=24)  # 24시간 이내만 허용 (구형 뉴스 필터)
+    today = datetime.now(KST_TZ).date()
+    now_kst = datetime.now(KST_TZ)
+    min_dt = now_kst - timedelta(hours=24)  # 24시간 이내만 허용 (구형 뉴스 필터)
     created = []
+    stats = {
+        "missing_fields": 0,
+        "bad_pubdate": 0,
+        "old_pubdate": 0,
+        "no_topic_key": 0,
+        "press_filtered": 0,
+        "duplicate_url": 0,
+        "saved": 0,
+    }
     temp_news_list = []  # 중복 제거 전 임시 리스트
     
     print(f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -121,9 +151,9 @@ def collect_by_press(db: Session) -> List[NewsDaily]:
                     if pub_raw:
                         pub_dt = parsedate_to_datetime(pub_raw)
                         if pub_dt.tzinfo:
-                            pub_dt = pub_dt.astimezone(timezone.utc)
+                            pub_dt = pub_dt.astimezone(KST_TZ)
                         else:
-                            pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+                            pub_dt = pub_dt.replace(tzinfo=KST_TZ)
                 except Exception:
                     pub_dt = None
 
@@ -228,6 +258,173 @@ def collect_by_press(db: Session) -> List[NewsDaily]:
     return created
 
 
+def collect_by_category_keywords(db: Session) -> List[NewsDaily]:
+    """카테고리별 키워드 검색으로 뉴스 수집 (경제/문화 보장)"""
+
+    from backend.app.utils.dedup import remove_duplicate_news
+
+    today = datetime.now(KST_TZ).date()
+    now_kst = datetime.now(KST_TZ)
+    min_dt = now_kst - timedelta(hours=24)
+    created = []
+    temp_news_list = []
+
+    print(f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print(f"🎯 카테고리별 뉴스 수집 시작")
+    print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+    total_fetched = 0
+
+    for category, keywords in CATEGORY_SEARCH_KEYWORDS.items():
+        # 빈 카테고리는 스킵 (society는 기본 분류로 충분)
+        if not keywords:
+            continue
+
+        print(f"\n📂 [{category.upper()}] 카테고리 수집 중...")
+
+        # 각 키워드로 검색 (키워드당 30개씩)
+        for keyword in keywords:
+            items = fetch_naver_news_raw(query=keyword, display=30)
+            total_fetched += len(items)
+
+            if not items:
+                continue
+
+            for item in items:
+                try:
+                    raw_title = item.get("title")
+                    url = item.get("originallink") or item.get("link")
+                    pub_raw = item.get("pubDate")
+
+                    if not raw_title or not url:
+                        continue
+
+                    # 발행일 파싱
+                    pub_dt = None
+                    try:
+                        if pub_raw:
+                            pub_dt = parsedate_to_datetime(pub_raw)
+                            if pub_dt.tzinfo:
+                                pub_dt = pub_dt.astimezone(KST_TZ)
+                            else:
+                                pub_dt = pub_dt.replace(tzinfo=KST_TZ)
+                    except Exception:
+                        pub_dt = None
+
+                    if not pub_dt or pub_dt < min_dt:
+                        continue
+
+                    pub_dt_naive = pub_dt.replace(tzinfo=None)
+                    item_date = pub_dt.date()
+
+                    # 제목 정제
+                    title = raw_title.replace("<b>", "").replace("</b>", "")
+                    topic_key = build_topic_key(title)
+
+                    if not topic_key:
+                        continue
+
+                    # 중복 체크
+                    existing = db.query(NewsDaily)\
+                        .filter(
+                            NewsDaily.date == item_date,
+                            NewsDaily.topic_key == topic_key
+                        )\
+                        .first()
+
+                    if existing:
+                        continue
+
+                    # 언론사 확인
+                    source_press = extract_press_from_url(url)
+                    if not source_press or source_press not in PRESS_BREAKING_CONFIG:
+                        continue
+
+                    # 카테고리 자동 분류 (재확인)
+                    detected_category = classify_category(title)
+
+                    # 속보 태그 확인
+                    is_breaking = check_breaking_tag(title)
+
+                    # 저장
+                    news = NewsDaily(
+                        date=item_date,
+                        category=detected_category,  # 자동 분류된 카테고리 사용
+                        title=title,
+                        url=url[:200] if url else "",
+                        source=source_press,
+                        topic_key=topic_key,
+                        is_breaking=is_breaking,
+                        is_top=False,
+                        hot_score=0,
+                        keywords=None,
+                        sentiment=None,
+                        published_at=pub_dt_naive,
+                    )
+
+                    temp_news_list.append(news)
+
+                except Exception as e:
+                    continue
+
+        print(f"  ✅ {category}: {len([n for n in temp_news_list if n.category == category])}개")
+
+    # 중복 제거
+    print(f"\n🔄 중복 제거 중...")
+    print(f"  - 수집: {len(temp_news_list)}개")
+    unique_news_list = remove_duplicate_news(temp_news_list)
+    print(f"  - 중복 제거 후: {len(unique_news_list)}개")
+
+    # DB 저장 (개별 커밋, 카테고리 업데이트 지원)
+    updated_count = 0
+    for news in unique_news_list:
+        try:
+            # 기존 뉴스 확인
+            existing = db.query(NewsDaily).filter(
+                NewsDaily.date == news.date,
+                NewsDaily.topic_key == news.topic_key
+            ).first()
+
+            if existing:
+                # 이미 존재하면 카테고리가 society이고 새 분류가 더 구체적이면 업데이트
+                if existing.category == "society" and news.category != "society":
+                    existing.category = news.category
+                    db.commit()
+                    updated_count += 1
+            else:
+                # 새 뉴스면 추가
+                db.add(news)
+                db.commit()
+                db.refresh(news)
+                created.append(news)
+        except IntegrityError:
+            # 중복이면 롤백하고 다음으로
+            db.rollback()
+            continue
+        except Exception as e:
+            # 다른 에러도 롤백하고 다음으로
+            db.rollback()
+            print(f"  ⚠️ 저장 실패: {news.title[:30]}... - {e}")
+            continue
+
+    if updated_count > 0:
+        print(f"  🔄 카테고리 업데이트: {updated_count}개")
+
+    print(f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print(f"📊 카테고리별 수집 완료:")
+    print(f"  - API 요청: {len(CATEGORY_SEARCH_KEYWORDS) * sum(len(k) for k in CATEGORY_SEARCH_KEYWORDS.values())}회")
+    print(f"  - 받은 뉴스: {total_fetched}개")
+    print(f"  - 저장된 뉴스: {len(created)}개")
+
+    # 카테고리별 통계
+    for category in CATEGORY_SEARCH_KEYWORDS.keys():
+        count = len([n for n in created if n.category == category])
+        print(f"  - {category}: {count}개")
+
+    print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+
+    return created
+
 
 def filter_repeated_person_names(news_list):
     """같은 인물 이름 3개 이상 → 3개만 유지"""
@@ -273,10 +470,19 @@ def collect_breaking_news(db: Session) -> List[NewsDaily]:
     
     from backend.app.utils.dedup import remove_duplicate_news
     
-    today = date.today()
-    now_utc = datetime.now(timezone.utc)
-    min_dt = now_utc - timedelta(hours=24)
+    today = datetime.now(KST_TZ).date()
+    now_kst = datetime.now(KST_TZ)
+    min_dt = now_kst - timedelta(hours=24)
     created = []
+    stats = {
+        "missing_fields": 0,
+        "bad_pubdate": 0,
+        "old_pubdate": 0,
+        "no_topic_key": 0,
+        "press_filtered": 0,
+        "duplicate_url": 0,
+        "saved": 0,
+    }
     
     print(f"\n⚡ 속보 라인 수집 중...")
     
@@ -296,6 +502,7 @@ def collect_breaking_news(db: Session) -> List[NewsDaily]:
             pub_raw = item.get("pubDate")
             
             if not raw_title or not url:
+                stats["missing_fields"] += 1
                 continue
 
             pub_dt = None
@@ -303,13 +510,18 @@ def collect_breaking_news(db: Session) -> List[NewsDaily]:
                 if pub_raw:
                     pub_dt = parsedate_to_datetime(pub_raw)
                     if pub_dt.tzinfo:
-                        pub_dt = pub_dt.astimezone(timezone.utc)
+                        pub_dt = pub_dt.astimezone(KST_TZ)
                     else:
-                        pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+                        pub_dt = pub_dt.replace(tzinfo=KST_TZ)
             except Exception:
                 pub_dt = None
 
-            if not pub_dt or pub_dt < min_dt:
+            if not pub_dt:
+                stats["bad_pubdate"] += 1
+                continue
+
+            if pub_dt < min_dt:
+                stats["old_pubdate"] += 1
                 continue
 
             pub_dt_naive = pub_dt.replace(tzinfo=None)
@@ -319,11 +531,13 @@ def collect_breaking_news(db: Session) -> List[NewsDaily]:
             topic_key = build_topic_key(title)
             
             if not topic_key:
+                stats["no_topic_key"] += 1
                 continue
             
             # 언론사 확인
             source_press = extract_press_from_url(url)
             if not source_press or source_press not in PRESS_BREAKING_CONFIG:
+                stats["press_filtered"] += 1
                 continue
             
             # 카테고리 분류
@@ -343,6 +557,7 @@ def collect_breaking_news(db: Session) -> List[NewsDaily]:
                 keywords=None,
                 sentiment=None,
                 published_at=pub_dt_naive,
+                created_at=pub_dt_naive,
             )
             
             temp_news_list.append(news)
@@ -366,19 +581,23 @@ def collect_breaking_news(db: Session) -> List[NewsDaily]:
     for news in unique_news_list:
         try:
             # DB에 이미 있는지 확인
-            existing = db.query(NewsDaily)\
+            existing = (
+                db.query(NewsDaily)
                 .filter(
                     NewsDaily.date == news.date,
-                    NewsDaily.topic_key == news.topic_key
-                )\
+                    NewsDaily.url == news.url,
+                )
                 .first()
+            )
             
             if existing:
+                stats["duplicate_url"] += 1
                 continue
             
             db.add(news)
             created.append(news)
             saved_count += 1
+            stats["saved"] += 1
             
         except Exception as e:
             continue
@@ -391,21 +610,29 @@ def collect_breaking_news(db: Session) -> List[NewsDaily]:
         db.rollback()
         created = []
     
-    print(f"  ✅ 속보 저장: {saved_count}개\n")
+    print(f"  ✅ 속보 저장: {saved_count}개")
+    print(
+        f"  📌 스킵 사유: missing={stats['missing_fields']} "
+        f"bad_pub={stats['bad_pubdate']} old_pub={stats['old_pubdate']} "
+        f"no_topic={stats['no_topic_key']} press={stats['press_filtered']} "
+        f"dup_url={stats['duplicate_url']}"
+    )
+    print("")
     
     return created
 
 
 def calculate_hot_score(news_id: int, db: Session) -> int:
     """핫 점수 계산"""
-    
-    news = db.query(NewsDaily).get(news_id)
+
+    news = db.query(NewsDaily).filter(NewsDaily.id == news_id).first()
     if not news:
         return 0
-    
+
     score = 0
-    today = date.today()
-    now = datetime.now()
+    # KST 기준 날짜/시간 (타임존 안전)
+    today = datetime.now(KST_TZ).date()
+    now = datetime.now(KST_TZ)
     
     # 1. 중복 주제 개수 (최대 100점)
     duplicate_count = db.query(NewsDaily)\
@@ -430,7 +657,9 @@ def calculate_hot_score(news_id: int, db: Session) -> int:
         score += 30
     
     # 4. 최신도 (최대 10점)
-    hours_old = (now - news.created_at).total_seconds() / 3600
+    # created_at이 타임존 정보가 없으면 KST로 간주
+    created_at = news.created_at if news.created_at.tzinfo else news.created_at.replace(tzinfo=KST_TZ)
+    hours_old = (now - created_at).total_seconds() / 3600
     if hours_old < 1:
         score += 10
     elif hours_old < 3:
@@ -450,8 +679,9 @@ def update_hot_scores(db: Session):
     """모든 오늘 뉴스의 핫 점수 업데이트"""
     
     print(f"\n🔥 핫 점수 계산 중...")
-    
-    today = date.today()
+
+    # KST 기준 오늘 날짜 (타임존 안전)
+    today = datetime.now(KST_TZ).date()
     news_list = db.query(NewsDaily)\
         .filter(NewsDaily.date == today)\
         .all()
@@ -466,10 +696,14 @@ def update_hot_scores(db: Session):
 
 def select_top_news(db: Session, category: str, limit: int = 10) -> List[NewsDaily]:
     """카테고리별 TOP 선정"""
+
+    from backend.app.utils.dedup import remove_duplicate_news
+
+    # KST 기준 오늘 날짜 (타임존 안전)
+    today = datetime.now(KST_TZ).date()
     
-    today = date.today()
-    
-    top_news = db.query(NewsDaily)\
+    candidate_limit = max(limit * 5, 50)
+    candidates = db.query(NewsDaily)\
         .filter(
             NewsDaily.date == today,
             NewsDaily.category == category
@@ -478,8 +712,10 @@ def select_top_news(db: Session, category: str, limit: int = 10) -> List[NewsDai
             NewsDaily.hot_score.desc(),
             NewsDaily.created_at.desc()
         )\
-        .limit(limit)\
+        .limit(candidate_limit)\
         .all()
+
+    top_news = remove_duplicate_news(candidates)[:limit]
     
     # is_top 플래그 업데이트
     for news in top_news:
@@ -512,9 +748,10 @@ def build_daily_rankings(db: Session):
 
 def get_today_summary(db: Session) -> List[NewsDaily]:
     """오늘의 요약: 각 카테고리 TOP 1"""
-    
+
     summary = []
-    today = date.today()
+    # KST 기준 오늘 날짜 (타임존 안전)
+    today = datetime.now(KST_TZ).date()
     
     for category in ["society", "economy", "culture", "entertainment"]:
         top1 = db.query(NewsDaily)\
@@ -544,11 +781,14 @@ def build_daily_top5_v3(db: Session):
     try:
         # 1. 언론사별 수집
         collect_by_press(db)
-        
-        # 2. 속보 라인 수집
+
+        # 2. 카테고리별 키워드 수집 (경제/문화 보장)
+        collect_by_category_keywords(db)
+
+        # 3. 속보 라인 수집
         collect_breaking_news(db)
-        
-        # 3. TOP 10 선정
+
+        # 4. TOP 10 선정
         build_daily_rankings(db)
         
         print(f"="*60)

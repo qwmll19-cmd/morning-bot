@@ -214,11 +214,11 @@ class LottoAPIClient:
             return None, None
         clean = html.unescape(re.sub(r"<[^>]+>", "", text))
 
-        # 보너스 번호
+        # 보너스 번호 (2026-02-02 수정: "는/은" 조사 처리)
         bonus = None
-        bonus_match = re.search(r"보너스\s*번호?\s*['\"]?\s*([1-3]\d|4[0-5]|[1-9])", clean)
+        bonus_match = re.search(r"보너스\s*번호?\s*(는|은)?\s*['\"]?\s*([1-3]\d|4[0-5]|[1-9])", clean)
         if bonus_match:
-            bonus = int(bonus_match.group(1))
+            bonus = int(bonus_match.group(2))  # group(1)은 "는/은", group(2)가 번호
 
         # 6개 번호 패턴 (쉼표로 구분된 리스트 우선)
         seq_match = re.search(

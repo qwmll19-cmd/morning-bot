@@ -3,46 +3,97 @@
 """
 
 import httpx
+import os
 import logging
-from datetime import date as date_type
+import time
+from datetime import date as date_type, datetime
 from sqlalchemy.orm import Session
 from typing import Optional
 
 from backend.app.config import settings
-from backend.app.db.models import Subscriber, MarketDaily, NewsDaily
+from backend.app.db.models import Subscriber, MarketDaily, NewsDaily, KoreaMetalDaily, NotificationLog
 
 logger = logging.getLogger(__name__)
 
 
-def send_telegram_message_sync(chat_id: str, text: str) -> bool:
+def send_telegram_message_sync(chat_id: str, text: str, max_retries: int = 3) -> bool:
     """
-    텔레그램 메시지 동기 전송
-    (스케줄러에서 호출하기 위해 동기 방식)
+    텔레그램 메시지 동기 전송 (재시도 로직 포함)
+
+    Args:
+        chat_id: 텔레그램 chat ID
+        text: 전송할 메시지
+        max_retries: 최대 재시도 횟수 (기본값: 3)
+
+    Returns:
+        bool: 전송 성공 여부
     """
+    # Telegram 메시지 길이 제한: 4096자
+    MAX_MESSAGE_LENGTH = 4096
+    if len(text) > MAX_MESSAGE_LENGTH:
+        logger.warning(
+            f"Message too long for {chat_id}: {len(text)} chars. Truncating to {MAX_MESSAGE_LENGTH}."
+        )
+        text = text[:MAX_MESSAGE_LENGTH - 50] + "\n\n... (메시지가 너무 길어 잘렸습니다)"
+    if os.getenv("TELEGRAM_DRY_RUN") == "1":
+        logger.info("TELEGRAM_DRY_RUN enabled: skip send to %s (len=%s)", chat_id, len(text))
+        return False
+
     token = settings.TELEGRAM_TOKEN
     if not token:
         logger.error("TELEGRAM_TOKEN is not set")
         return False
-    
+
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    
-    try:
-        response = httpx.post(
-            url,
-            json={
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True
-            },
-            timeout=10.0
-        )
-        response.raise_for_status()
-        logger.info(f"Message sent to {chat_id}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send message to {chat_id}: {e}")
-        return False
+
+    for attempt in range(max_retries):
+        try:
+            response = httpx.post(
+                url,
+                json={
+                    "chat_id": chat_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True
+                },
+                timeout=10.0
+            )
+            response.raise_for_status()
+
+            if attempt > 0:
+                logger.info(f"Message sent to {chat_id} (succeeded on attempt {attempt + 1})")
+            else:
+                logger.info(f"Message sent to {chat_id}")
+            return True
+
+        except (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException, ConnectionResetError) as e:
+            # 네트워크 관련 에러: 재시도 가능
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                logger.warning(
+                    f"Network error sending to {chat_id} (attempt {attempt + 1}/{max_retries}): {e}. "
+                    f"Retrying in {wait_time}s..."
+                )
+                time.sleep(wait_time)
+            else:
+                logger.error(
+                    f"Failed to send message to {chat_id} after {max_retries} attempts: {e}"
+                )
+                return False
+
+        except httpx.HTTPStatusError as e:
+            # HTTP 에러 (400, 403, 404 등): 재시도해도 소용없음
+            logger.error(
+                f"HTTP error sending to {chat_id}: {e.response.status_code} - {e.response.text}"
+            )
+            return False
+
+        except Exception as e:
+            # 기타 예상치 못한 에러
+            logger.error(f"Unexpected error sending to {chat_id}: {e}", exc_info=True)
+            return False
+
+    return False
 
 
 def generate_morning_brief(db: Session, target_date: Optional[date_type] = None) -> str:
@@ -50,7 +101,10 @@ def generate_morning_brief(db: Session, target_date: Optional[date_type] = None)
     아침 브리핑 메시지 생성 (09:05 이후 - 전일대비 포함)
     """
     if target_date is None:
-        target_date = date_type.today()
+        # KST 기준 오늘 날짜 (타임존 안전)
+        from datetime import timezone, timedelta
+        kst = timezone(timedelta(hours=9))
+        target_date = datetime.now(kst).date()
     
     # 시장 데이터 조회
     market: Optional[MarketDaily] = (
@@ -60,13 +114,40 @@ def generate_morning_brief(db: Session, target_date: Optional[date_type] = None)
         .first()
     )
     
-    # 뉴스 Top5 조회
-    news_list = (
+    # 뉴스 Top5: 카테고리별 Top1 + 속보 1개 (중복 제거)
+    from backend.app.utils.dedup import remove_duplicate_news
+    news_list = []
+    for category in ["society", "economy", "culture", "entertainment"]:
+        top1 = (
+            db.query(NewsDaily)
+            .filter(NewsDaily.date == target_date, NewsDaily.category == category)
+            .order_by(NewsDaily.hot_score.desc(), NewsDaily.created_at.desc())
+            .first()
+        )
+        if top1:
+            news_list.append(top1)
+
+    breaking_top1 = (
         db.query(NewsDaily)
-        .filter(NewsDaily.date == target_date, NewsDaily.is_top.is_(True))
-        .order_by(NewsDaily.created_at.desc())
-        .limit(10)
-        .all()
+        .filter(NewsDaily.date == target_date, NewsDaily.is_breaking.is_(True))
+        .order_by(NewsDaily.hot_score.desc(), NewsDaily.created_at.desc())
+        .first()
+    )
+    if breaking_top1:
+        news_list.append(breaking_top1)
+
+    if news_list:
+        news_list = remove_duplicate_news(news_list)
+
+
+    # 전일 데이터 (전일대비 계산용)
+    from datetime import timedelta
+    yesterday = target_date - timedelta(days=1)
+    market_yesterday: Optional[MarketDaily] = (
+        db.query(MarketDaily)
+        .filter(MarketDaily.date == yesterday)
+        .order_by(MarketDaily.id.desc())
+        .first()
     )
     
     lines = []
@@ -148,36 +229,71 @@ def generate_morning_brief(db: Session, target_date: Optional[date_type] = None)
         # 금속 시세 (확장 버전)
         if market.gold_usd and market.usd_krw:
             lines.append("🥇 금속 시세")
-            
-            # 금
-            gold_per_gram = market.gold_usd / 31.1035
-            gold_per_don = gold_per_gram * 3.75 * market.usd_krw
-            lines.append(f"💛 금: {gold_per_don:,.0f}원/돈")
-            
-            # 은
+
+            korea_gold = (
+                db.query(KoreaMetalDaily)
+                .filter(KoreaMetalDaily.metal == "gold")
+                .order_by(KoreaMetalDaily.date.desc(), KoreaMetalDaily.id.desc())
+                .first()
+            )
+            korea_silver = (
+                db.query(KoreaMetalDaily)
+                .filter(KoreaMetalDaily.metal == "silver")
+                .order_by(KoreaMetalDaily.date.desc(), KoreaMetalDaily.id.desc())
+                .first()
+            )
+            korea_platinum = (
+                db.query(KoreaMetalDaily)
+                .filter(KoreaMetalDaily.metal == "platinum")
+                .order_by(KoreaMetalDaily.date.desc(), KoreaMetalDaily.id.desc())
+                .first()
+            )
+
+            def _format_korea_metal(name, emoji, usd_price, korea_row, usd_price_yesterday):
+                if not usd_price or not korea_row or not korea_row.buy_3_75g:
+                    return
+                per_gram = usd_price / 31.1035
+                per_don = per_gram * 3.75 * market.usd_krw
+                lines.append(f"{emoji} {name} (1돈)")
+                if korea_row.sell_3_75g:
+                    lines.append(
+                        f"   국내 살때 ₩{korea_row.buy_3_75g:,.0f} / 팔때 ₩{korea_row.sell_3_75g:,.0f}"
+                    )
+                else:
+                    lines.append(f"   국내 살때 ₩{korea_row.buy_3_75g:,.0f}")
+                premium_pct = (korea_row.buy_3_75g - per_don) / per_don * 100
+                sign = "+" if premium_pct > 0 else ""
+                lines.append(f"   프리미엄 {sign}{premium_pct:.2f}% (국내 살때 vs 국제)")
+                # 전일대비 (2026-02-02 추가)
+                if usd_price_yesterday:
+                    change = usd_price - usd_price_yesterday
+                    change_pct = (change / usd_price_yesterday) * 100
+                    emoji_change = "🔺" if change > 0 else "🔻" if change < 0 else "➖"
+                    sign_change = "+" if change > 0 else ""
+                    lines.append(f"   전일대비 {emoji_change} {sign_change}${change:.2f} ({sign_change}{change_pct:.2f}%)")
+
+            shown = False
+            _format_korea_metal(
+                "금", "💛", market.gold_usd, korea_gold,
+                market_yesterday.gold_usd if market_yesterday else None
+            )
+            shown = shown or (korea_gold and korea_gold.buy_3_75g and market.gold_usd)
             if market.silver_usd:
-                silver_per_gram = market.silver_usd / 31.1035
-                silver_per_don = silver_per_gram * 3.75 * market.usd_krw
-                lines.append(f"⚪ 은: {silver_per_don:,.0f}원/돈")
-            
-            # 구리
-            if market.copper_usd:
-                copper_per_kg = market.copper_usd / 0.453592  # lb to kg
-                copper_krw = copper_per_kg * market.usd_krw
-                lines.append(f"🟤 구리: {copper_krw:,.0f}원/kg")
-            
-            # 백금
+                _format_korea_metal(
+                    "은", "⚪", market.silver_usd, korea_silver,
+                    market_yesterday.silver_usd if market_yesterday else None
+                )
+                shown = shown or (korea_silver and korea_silver.buy_3_75g and market.silver_usd)
             if market.platinum_usd:
-                platinum_per_gram = market.platinum_usd / 31.1035
-                platinum_per_don = platinum_per_gram * 3.75 * market.usd_krw
-                lines.append(f"⚪ 백금: {platinum_per_don:,.0f}원/돈")
-            
-            # 팔라디움
-            if market.palladium_usd:
-                palladium_per_gram = market.palladium_usd / 31.1035
-                palladium_per_don = palladium_per_gram * 3.75 * market.usd_krw
-                lines.append(f"⚪ 팔라디움: {palladium_per_don:,.0f}원/돈")
-            
+                _format_korea_metal(
+                    "백금", "⚪", market.platinum_usd, korea_platinum,
+                    market_yesterday.platinum_usd if market_yesterday else None
+                )
+                shown = shown or (korea_platinum and korea_platinum.buy_3_75g and market.platinum_usd)
+
+            if not shown:
+                lines.append("국내 금/은/백금 시세 데이터가 없습니다.")
+
             lines.append("")
     
     # 뉴스
@@ -185,6 +301,8 @@ def generate_morning_brief(db: Session, target_date: Optional[date_type] = None)
         lines.append("📰 주요 뉴스")
         for idx, news in enumerate(news_list[:5], 1):
             lines.append(f"{idx}) {news.title}")
+            if news.url:
+                lines.append(f"🔗 {news.url}")
         lines.append("")
     
     if not market and not news_list:
@@ -232,6 +350,56 @@ def send_morning_brief_to_all(db: Session) -> dict:
         "total": len(subscribers),
         "message": f"Sent to {sent_count}/{len(subscribers)} subscribers"
     }
+
+
+def send_morning_brief_to_chat(db: Session, chat_id: str) -> bool:
+    """특정 사용자에게 아침 브리핑 전송 (로그 기록 포함)"""
+    from datetime import timezone, timedelta
+
+    message = generate_morning_brief(db)
+    # KST 기준 오늘 날짜 (타임존 안전)
+    kst = timezone(timedelta(hours=9))
+    today = datetime.now(kst).date()
+
+    # 로그 생성 또는 조회
+    log = db.query(NotificationLog).filter(
+        NotificationLog.chat_id == chat_id,
+        NotificationLog.notification_type == "morning_brief",
+        NotificationLog.scheduled_date == today
+    ).first()
+
+    if not log:
+        log = NotificationLog(
+            chat_id=chat_id,
+            notification_type="morning_brief",
+            status="pending_retry",
+            scheduled_date=today,
+            message_preview=message[:100] if message else None,
+            retry_count=0
+        )
+        db.add(log)
+        db.commit()
+
+    # 전송 시도
+    from backend.app.db.models import utcnow
+    log.last_attempt_at = utcnow()
+    log.retry_count += 1
+
+    success = send_telegram_message_sync(chat_id, message)
+
+    if success:
+        log.status = "success"
+        log.succeeded_at = utcnow()
+        log.error_message = None
+    else:
+        if log.retry_count >= log.max_retries:
+            log.status = "failed"
+            log.error_message = f"Failed after {log.retry_count} attempts"
+        else:
+            log.status = "pending_retry"
+
+    db.commit()
+    return success
 
 
 def send_breaking_alert(db: Session, news_item) -> dict:
@@ -297,8 +465,11 @@ def send_breaking_top5(db: Session) -> dict:
     subscribers = db.query(Subscriber).filter(Subscriber.subscribed_alert.is_(True)).all()
     if not subscribers:
         return {"sent": 0}
-    
-    today = date.today()
+
+    # KST 기준 오늘 날짜 (타임존 안전)
+    from datetime import timezone, timedelta
+    kst = timezone(timedelta(hours=9))
+    today = datetime.now(kst).date()
     breaking_news = db.query(NewsDaily).filter(
         NewsDaily.date == today,
         NewsDaily.is_breaking.is_(True),
@@ -346,7 +517,11 @@ def send_breaking_batch(db: Session, news_items: list) -> int:
     if not subscribers:
         return 0
     
-    # 배치 메시지 생성
+    # 중복 제거 후 배치 메시지 생성
+    from backend.app.utils.dedup import remove_duplicate_news
+    if news_items:
+        news_items = remove_duplicate_news(news_items)
+
     lines = ["⚡ 긴급 속보 모음 · BREAKING NEWS"]
     lines.append("")
     lines.append(f"📰 총 {len(news_items)}건")
@@ -369,11 +544,22 @@ def send_breaking_batch(db: Session, news_items: list) -> int:
         if send_telegram_message_sync(subscriber.chat_id, message):
             sent_count += 1
     
-    # 모든 속보 전송 완료 플래그 설정
-    for news in news_items:
-        news.alert_sent = True
-    db.commit()
-    
-    logger.info(f"Breaking batch sent: {len(news_items)} items to {sent_count} subscribers")
+    failed_count = len(subscribers) - sent_count
+    logger.info(
+        "Breaking batch send result: items=%s subscribers=%s sent=%s failed=%s",
+        len(news_items),
+        len(subscribers),
+        sent_count,
+        failed_count,
+    )
+
+    # 전송이 0건이면 alert_sent 갱신하지 않음 (재시도 가능하도록 보존)
+    if sent_count > 0:
+        for news in news_items:
+            news.alert_sent = True
+        db.commit()
+        logger.info("Breaking batch marked sent (items=%s)", len(news_items))
+    else:
+        logger.warning("Breaking batch skipped alert_sent update (sent=0)")
     
     return sent_count

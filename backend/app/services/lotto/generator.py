@@ -80,9 +80,18 @@ def generate_20_lines(user_id: int, stats: Dict, ai_weights: Dict = None) -> Dic
     scores2 = stats['scores_logic2']
     scores3 = stats['scores_logic3']
     bonus_top = stats.get('bonus_top', [])
-    
+
+    # ML 가중치 우선 사용 (없으면 기본값)
     if ai_weights is None:
-        ai_weights = {'logic1': 0.33, 'logic2': 0.33, 'logic3': 0.34}
+        try:
+            from backend.app.services.lotto.ml_trainer import LottoMLTrainer
+            trainer = LottoMLTrainer()
+            if trainer.load_model():
+                ai_weights = trainer.get_ai_weights()
+            else:
+                ai_weights = {'logic1': 0.33, 'logic2': 0.33, 'logic3': 0.34}
+        except:
+            ai_weights = {'logic1': 0.33, 'logic2': 0.33, 'logic3': 0.34}
     
     result = {
         'basic': [],

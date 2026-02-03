@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 import time
 from typing import Any, Dict, List, Optional, Tuple
 import logging
@@ -269,7 +269,7 @@ def fetch_kospi_top5() -> List[Dict[str, Any]]:
         name = cols[1].get_text(strip=True)
         price = cols[2].get_text(strip=True)
         change = cols[3].get_text(strip=True)
-        change_rate = cols[9].get_text(strip=True)
+        change_rate = cols[4].get_text(strip=True)
 
         if not name:
             continue
@@ -353,7 +353,9 @@ def fetch_nasdaq100_index() -> Dict[str, Any]:
 
 def collect_market_daily(db: Session) -> MarketDaily:
     """오늘자 시세를 수집하여 MarketDaily 에 저장하고 반환합니다."""
-    today = date.today()
+    # KST 기준 오늘 날짜 (타임존 안전)
+    kst = timezone(timedelta(hours=9))
+    today = datetime.now(kst).date()
 
     usd_krw = fetch_usd_krw_rate()
     btc_usdt, btc_krw, btc_usd, btc_change_24h = fetch_btc_from_coinpaprika()
@@ -370,6 +372,51 @@ def collect_market_daily(db: Session) -> MarketDaily:
     # BTC KRW 계산 (USD * 환율)
     if btc_usd and usd_krw and not btc_krw:
         btc_krw = btc_usd * usd_krw
+
+    # 직전 데이터로 누락값 보정 (API 실패 대비)
+    previous = (
+        db.query(MarketDaily)
+        .filter(MarketDaily.date < today)
+        .order_by(MarketDaily.date.desc(), MarketDaily.id.desc())
+        .first()
+    )
+    if previous:
+        missing_fields = []
+        def _fallback(value, prev_value, field_name):
+            if value is None and prev_value is not None:
+                missing_fields.append(field_name)
+                return prev_value
+            return value
+
+        usd_krw = _fallback(usd_krw, previous.usd_krw, "usd_krw")
+        btc_usdt = _fallback(btc_usdt, previous.btc_usdt, "btc_usdt")
+        btc_usd = _fallback(btc_usd, previous.btc_usd, "btc_usd")
+        btc_change_24h = _fallback(btc_change_24h, previous.btc_change_24h, "btc_change_24h")
+        kospi_top5 = _fallback(kospi_top5, previous.kospi_top5, "kospi_top5")
+
+        if btc_usd and usd_krw and not btc_krw:
+            btc_krw = btc_usd * usd_krw
+        btc_krw = _fallback(btc_krw, previous.btc_krw, "btc_krw")
+
+        metals = {
+            "gold": _fallback(metals.get("gold"), previous.gold_usd, "gold_usd"),
+            "silver": _fallback(metals.get("silver"), previous.silver_usd, "silver_usd"),
+            "platinum": _fallback(metals.get("platinum"), previous.platinum_usd, "platinum_usd"),
+            "copper": _fallback(metals.get("copper"), previous.copper_usd, "copper_usd"),
+            "palladium": _fallback(metals.get("palladium"), previous.palladium_usd, "palladium_usd"),
+            "aluminum": _fallback(metals.get("aluminum"), previous.aluminum_usd, "aluminum_usd"),
+            "nickel": _fallback(metals.get("nickel"), previous.nickel_usd, "nickel_usd"),
+            "zinc": _fallback(metals.get("zinc"), previous.zinc_usd, "zinc_usd"),
+            "lead": _fallback(metals.get("lead"), previous.lead_usd, "lead_usd"),
+        }
+
+        kospi_index = _fallback(kospi_data.get("index"), previous.kospi_index, "kospi_index")
+        nasdaq_index = _fallback(nasdaq_data.get("index"), previous.nasdaq_index, "nasdaq_index")
+        kospi_data = {"index": kospi_index}
+        nasdaq_data = {"index": nasdaq_index}
+
+        if missing_fields:
+            logger.warning("시장 데이터 누락 보정 적용: %s", ", ".join(sorted(set(missing_fields))))
 
     market = MarketDaily(
         date=today,
@@ -411,8 +458,10 @@ def calculate_daily_changes(db: Session) -> None:
     """09:05에 실행 - 오늘/어제 데이터를 비교하여 전일대비 계산"""
     import logging
     logger = logging.getLogger(__name__)
-    
-    today = date.today()
+
+    # KST 기준 날짜 (타임존 안전)
+    kst = timezone(timedelta(hours=9))
+    today = datetime.now(kst).date()
     yesterday = today - timedelta(days=1)
     
     # 오늘 데이터 조회

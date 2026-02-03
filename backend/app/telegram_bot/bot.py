@@ -1,6 +1,8 @@
 import logging
+import time
+from pathlib import Path
 from typing import Optional, Dict, Any
-from datetime import datetime, time as time_type
+from datetime import datetime, date, time as time_type, timedelta, timezone
 import httpx
 
 from telegram import (
@@ -19,9 +21,33 @@ from telegram.ext import (
 )
 
 from backend.app.config import settings
-from backend.app.handlers.lotto.lotto_handler import lotto_command, lotto_result_callback, lotto_result_message
+from backend.app.handlers.lotto.lotto_handler import (
+    lotto_command,
+    lotto_generate_callback,
+    lotto_result_command,
+    lotto_result_callback,
+    lotto_performance_command
+)
 
-logging.basicConfig(level=logging.INFO)
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_PATH = LOG_DIR / "bot.log"
+
+root_logger = logging.getLogger()
+if not root_logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(LOG_PATH),
+        ],
+    )
+else:
+    root_logger.setLevel(logging.INFO)
+    file_handler = logging.FileHandler(LOG_PATH)
+    file_handler.setLevel(logging.INFO)
+    root_logger.addHandler(file_handler)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
@@ -74,31 +100,79 @@ def build_timeframe_keyboard(symbol: str) -> InlineKeyboardMarkup:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = (
-        "안녕하세요, 모닝 마켓 봇입니다 🌅\n\n"
-        "아래 버튼을 눌러 바로 사용할 수 있어요.\n"
-        "🪙 BTC - 비트코인 시세\n"
-        "📊 시장 지수 - KOSPI/나스닥 지수 + Top5\n"
-        "🪙 전체 암호화폐 - ETH/SOL/XRP/TRX 한 번에 보기\n"
-        "📰 전체 뉴스 - 사회/경제/문화/연예 카테고리별 Top 5\n"
-        "📈 오늘 요약 - 종합 뉴스, 지수, 환율, 금속 (09:05 이후 전일대비 포함)\n"
-        "💵 환율 - 주요 환율 확인\n"
-        "🥇 금속 조회하기 - 금/은/구리/백금/팔라디움 가격 조회\n\n"
-        "━━━━━━━━━━━━━━\n"
-        "🔔 자동 알림 받기\n\n"
-        "/subscribe - 매일 아침 자동 알림 구독\n"
-        "/set_time - 알림 시간 설정 (버튼 클릭)\n"
-        "/settings - 현재 설정 확인\n"
-        "/unsubscribe - 알림 구독 취소\n\n"
-        "자동 알림은 원하는 시간에 받을 수 있습니다!"
-    )
+    from backend.app.db.session import SessionLocal
+    from backend.app.db.models import Subscriber
+
+    chat_id = str(update.effective_chat.id)
+    db = SessionLocal()
+    is_new_user = False
+
+    try:
+        # 자동 구독 등록 (봇 추가 시 자동으로 구독자로 등록)
+        subscriber = db.query(Subscriber).filter(Subscriber.chat_id == chat_id).first()
+        if not subscriber:
+            subscriber = Subscriber(
+                chat_id=chat_id,
+                subscribed_alert=True,
+                custom_time="09:10"
+            )
+            db.add(subscriber)
+            db.commit()
+            is_new_user = True
+
+            # 즉시 스케줄러에 등록
+            try:
+                from backend.app.scheduler.jobs import schedule_user_alerts
+                schedule_user_alerts()
+            except Exception as e:
+                print(f"스케줄러 등록 오류: {e}")
+    finally:
+        db.close()
+
+    if is_new_user:
+        text = (
+            "안녕하세요, 모닝 마켓 봇입니다 🌅\n\n"
+            "✅ 자동으로 아침 알림이 구독되었습니다!\n"
+            "📍 알림 시간: 매일 09:10\n"
+            "⏰ /set_time 으로 시간 변경 가능\n\n"
+            "━━━━━━━━━━━━━━\n"
+            "아래 버튼을 눌러 바로 사용할 수 있어요.\n"
+            "🪙 BTC - 비트코인 시세\n"
+            "📊 시장 지수 - KOSPI/나스닥 지수 + Top5\n"
+            "🪙 전체 암호화폐 - ETH/SOL/XRP/TRX 한 번에 보기\n"
+            "📰 전체 뉴스 - 사회/경제/문화/연예 카테고리별 Top 5\n"
+            "📈 오늘 요약 - 종합 뉴스, 지수, 환율, 금속\n"
+            "💵 환율 - 주요 환율 확인\n"
+            "🥇 금속 조회하기 - 금/은/구리/백금/팔라디움\n"
+            "🎰 로또 번호 생성 - AI 로또 번호\n\n"
+            "━━━━━━━━━━━━━━\n"
+            "/unsubscribe - 알림 구독 취소\n"
+            "/settings - 현재 설정 확인"
+        )
+    else:
+        text = (
+            "안녕하세요, 모닝 마켓 봇입니다 🌅\n\n"
+            "아래 버튼을 눌러 바로 사용할 수 있어요.\n"
+            "🪙 BTC - 비트코인 시세\n"
+            "📊 시장 지수 - KOSPI/나스닥 지수 + Top5\n"
+            "🪙 전체 암호화폐 - ETH/SOL/XRP/TRX 한 번에 보기\n"
+            "📰 전체 뉴스 - 사회/경제/문화/연예 카테고리별 Top 5\n"
+            "📈 오늘 요약 - 종합 뉴스, 지수, 환율, 금속\n"
+            "💵 환율 - 주요 환율 확인\n"
+            "🥇 금속 조회하기 - 금/은/구리/백금/팔라디움\n"
+            "🎰 로또 번호 생성 - AI 로또 번호\n\n"
+            "━━━━━━━━━━━━━━\n"
+            "/set_time - 알림 시간 설정\n"
+            "/settings - 현재 설정 확인\n"
+            "/unsubscribe - 알림 구독 취소"
+        )
     await update.message.reply_text(text, reply_markup=MAIN_KEYBOARD)
 
 
 async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """오늘 요약 - DB에서 직접 가져오기 (09:05 기준)"""
     from backend.app.db.session import SessionLocal
-    from backend.app.db.models import MarketDaily, NewsDaily
+    from backend.app.db.models import MarketDaily, NewsDaily, KoreaMetalDaily
     from datetime import date, timedelta, timezone
 
     db = SessionLocal()
@@ -110,11 +184,12 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         cutoff_time = time_type(9, 5)  # 09:05 KST
 
         # 09:05 이전이면 어제 데이터, 이후면 오늘 데이터
+        # KST 기준 날짜 (타임존 안전)
         if now.time() < cutoff_time:
-            target_date = date.today() - timedelta(days=1)
+            target_date = now.date() - timedelta(days=1)
             date_label = "어제"
         else:
-            target_date = date.today()
+            target_date = now.date()
             date_label = "오늘"
         
         # 시장 데이터 조회
@@ -122,28 +197,34 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             MarketDaily.date == target_date
         ).order_by(MarketDaily.id.desc()).first()
         
-        # 뉴스 조회
-        from datetime import timedelta
+        # 뉴스 조회: 카테고리별 Top1 + 속보 1개 (중복 제거)
         from sqlalchemy import func
-        now_utc = datetime.utcnow()
-        recent_cutoff = now_utc - timedelta(hours=24)
-        published_or_created = func.coalesce(NewsDaily.published_at, NewsDaily.created_at)
-        # 24시간 내 발행본 우선, 부족하면 48시간으로 확장
-        news_list = db.query(NewsDaily).filter(
-            published_or_created >= recent_cutoff
-        ).order_by(
-            published_or_created.desc(),
-            NewsDaily.hot_score.desc()
-        ).limit(5).all()
+        from backend.app.utils.dedup import remove_duplicate_news
 
-        if len(news_list) < 5:
-            fallback_cutoff = now_utc - timedelta(hours=48)
-            news_list = db.query(NewsDaily).filter(
-                published_or_created >= fallback_cutoff
-            ).order_by(
-                published_or_created.desc(),
-                NewsDaily.hot_score.desc()
-            ).limit(5).all()
+        news_list = []
+        for category in ["society", "economy", "culture", "entertainment"]:
+            top1 = (
+                db.query(NewsDaily)
+                .filter(NewsDaily.date == target_date, NewsDaily.category == category)
+                .order_by(NewsDaily.hot_score.desc(), NewsDaily.created_at.desc())
+                .first()
+            )
+            if top1:
+                news_list.append(top1)
+
+        breaking_top1 = (
+            db.query(NewsDaily)
+            .filter(NewsDaily.date == target_date, NewsDaily.is_breaking.is_(True))
+            .order_by(NewsDaily.hot_score.desc(), NewsDaily.created_at.desc())
+            .first()
+        )
+        if breaking_top1:
+            news_list.append(breaking_top1)
+
+        if news_list:
+            news_list = remove_duplicate_news(news_list)
+
+        news_list = news_list[:5]
 
         # 전일대비 값이 비어 있을 때 즉시 계산 (스케줄러 09:05 이전에도 표시되도록)
         market_yesterday = None
@@ -270,10 +351,42 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     medal = ["🥇", "🥈", "🥉", "🏅", "🎖️"][idx-1]
                     name = stock.get("name", "")
                     price = stock.get("price", "")
+                    change = stock.get("change", "")
                     change_rate = stock.get("change_rate", "")
                     emoji = "🔺" if "+" in str(change_rate) else "🔻" if "-" in str(change_rate) else "➖"
                     lines.append(f"{medal} {idx}위 {name}")
-                    lines.append(f"   {price} {emoji} {change_rate}")
+                    lines.append(f"   {price}")
+                    if change or change_rate:
+                        import re
+
+                        change_text = str(change or "").strip()
+                        rate_text = str(change_rate or "").strip()
+
+                        sign = ""
+                        if "-" in rate_text:
+                            sign = "-"
+                        elif "+" in rate_text:
+                            sign = "+"
+                        elif "하락" in change_text:
+                            sign = "-"
+                        elif "상승" in change_text:
+                            sign = "+"
+
+                        change_num = re.sub(r"[^0-9]", "", change_text)
+                        if change_num:
+                            change_num = f"{int(change_num):,}"
+                            change_display = f"{sign}{change_num}" if sign else change_num
+                        else:
+                            change_display = change_text or "-"
+
+                        rate_num = re.sub(r"[^0-9.]", "", rate_text)
+                        if rate_num:
+                            rate_display = f"{sign}{rate_num}%" if sign else f"{rate_num}%"
+                        else:
+                            rate_display = rate_text or "-"
+
+                        emoji = "🔺" if sign == "+" else "🔻" if sign == "-" else "➖"
+                        lines.append(f"   전일대비 {emoji} {change_display} ({rate_display})")
                 lines.append("")
                 lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
                 lines.append("")
@@ -281,39 +394,76 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             # 금속 시세
             if market.gold_usd and market.usd_krw:
                 lines.append("🥇 금속 시세")
-                
+                korea_gold = (
+                    db.query(KoreaMetalDaily)
+                    .filter(KoreaMetalDaily.metal == "gold")
+                    .order_by(KoreaMetalDaily.date.desc(), KoreaMetalDaily.id.desc())
+                    .first()
+                )
+                korea_silver = (
+                    db.query(KoreaMetalDaily)
+                    .filter(KoreaMetalDaily.metal == "silver")
+                    .order_by(KoreaMetalDaily.date.desc(), KoreaMetalDaily.id.desc())
+                    .first()
+                )
+                korea_platinum = (
+                    db.query(KoreaMetalDaily)
+                    .filter(KoreaMetalDaily.metal == "platinum")
+                    .order_by(KoreaMetalDaily.date.desc(), KoreaMetalDaily.id.desc())
+                    .first()
+                )
+
                 # 어제 데이터 조회 (전일대비용)
                 yesterday_date = target_date - timedelta(days=1)
                 market_yesterday = db.query(MarketDaily).filter(
                     MarketDaily.date == yesterday_date
                 ).order_by(MarketDaily.id.desc()).first()
                 
-                # 금
-                gold_per_gram = market.gold_usd / 31.1035
-                gold_per_don = gold_per_gram * 3.75 * market.usd_krw
-                lines.append(f"💛 금 (1돈) ₩{gold_per_don:,.0f}")
-                if market_yesterday and market_yesterday.gold_usd:
-                    gold_change = market.gold_usd - market_yesterday.gold_usd
-                    gold_change_pct = (gold_change / market_yesterday.gold_usd) * 100
-                    emoji = "🔺" if gold_change > 0 else "🔻" if gold_change < 0 else "➖"
-                    sign = "+" if gold_change > 0 else ""
-                    lines.append(f"   {emoji} {sign}${gold_change:.2f} ({sign}{gold_change_pct:.2f}%)")
-                
-                
-                # 은
+                def _format_korea_metal(name, emoji, usd_price, korea_row, usd_price_yesterday):
+                    if not usd_price or not korea_row or not korea_row.buy_3_75g:
+                        return
+                    per_gram = usd_price / 31.1035
+                    per_don = per_gram * 3.75 * market.usd_krw
+                    lines.append(f"{emoji} {name} (1돈)")
+                    if korea_row.sell_3_75g:
+                        lines.append(
+                            f"   국내 살때 ₩{korea_row.buy_3_75g:,.0f} / 팔때 ₩{korea_row.sell_3_75g:,.0f}"
+                        )
+                    else:
+                        lines.append(f"   국내 살때 ₩{korea_row.buy_3_75g:,.0f}")
+                    premium_pct = (korea_row.buy_3_75g - per_don) / per_don * 100
+                    sign = "+" if premium_pct > 0 else ""
+                    lines.append(f"   프리미엄 {sign}{premium_pct:.2f}% (국내 살때 vs 국제)")
+                    if usd_price_yesterday:
+                        change = usd_price - usd_price_yesterday
+                        change_pct = (change / usd_price_yesterday) * 100
+                        emoji_change = "🔺" if change > 0 else "🔻" if change < 0 else "➖"
+                        sign_change = "+" if change > 0 else ""
+                        lines.append(f"   전일대비 {emoji_change} {sign_change}${change:.2f} ({sign_change}{change_pct:.2f}%)")
+
+                shown = False
+                _format_korea_metal(
+                    "금", "💛", market.gold_usd, korea_gold,
+                    market_yesterday.gold_usd if market_yesterday else None
+                )
+                shown = shown or (korea_gold and korea_gold.buy_3_75g and market.gold_usd)
                 if market.silver_usd:
-                    silver_per_gram = market.silver_usd / 31.1035
-                    silver_per_don = silver_per_gram * 3.75 * market.usd_krw
-                    lines.append(f"⚪ 은 (1돈) ₩{silver_per_don:,.0f}")
-                    if market_yesterday and market_yesterday.silver_usd:
-                        silver_change = market.silver_usd - market_yesterday.silver_usd
-                        silver_change_pct = (silver_change / market_yesterday.silver_usd) * 100
-                        emoji = "🔺" if silver_change > 0 else "🔻" if silver_change < 0 else "➖"
-                        sign = "+" if silver_change > 0 else ""
-                        lines.append(f"   {emoji} {sign}${silver_change:.2f} ({sign}{silver_change_pct:.2f}%)")
-                    
-                
-                # 구리
+                    _format_korea_metal(
+                        "은", "⚪", market.silver_usd, korea_silver,
+                        market_yesterday.silver_usd if market_yesterday else None
+                    )
+                    shown = shown or (korea_silver and korea_silver.buy_3_75g and market.silver_usd)
+                if market.platinum_usd:
+                    _format_korea_metal(
+                        "백금", "⚪", market.platinum_usd, korea_platinum,
+                        market_yesterday.platinum_usd if market_yesterday else None
+                    )
+                    shown = shown or (korea_platinum and korea_platinum.buy_3_75g and market.platinum_usd)
+
+                if not shown:
+                    lines.append("국내 금/은/백금 시세 데이터가 없습니다.")
+
+                # 구리는 기존처럼 유지 (국내 시세와 무관하게 표시)
                 if market.copper_usd:
                     copper_per_kg = market.copper_usd / 0.453592  # lb to kg
                     copper_krw = copper_per_kg * market.usd_krw
@@ -323,20 +473,7 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                         copper_change_pct = (copper_change / market_yesterday.copper_usd) * 100
                         emoji = "🔺" if copper_change > 0 else "🔻" if copper_change < 0 else "➖"
                         sign = "+" if copper_change > 0 else ""
-                        lines.append(f"   {emoji} {sign}${copper_change:.4f} ({sign}{copper_change_pct:.2f}%)")
-                    
-                
-                # 백금
-                if market.platinum_usd:
-                    platinum_per_gram = market.platinum_usd / 31.1035
-                    platinum_per_don = platinum_per_gram * 3.75 * market.usd_krw
-                    lines.append(f"⚪ 백금 (1돈) ₩{platinum_per_don:,.0f}")
-                    if market_yesterday and market_yesterday.platinum_usd:
-                        platinum_change = market.platinum_usd - market_yesterday.platinum_usd
-                        platinum_change_pct = (platinum_change / market_yesterday.platinum_usd) * 100
-                        emoji = "🔺" if platinum_change > 0 else "🔻" if platinum_change < 0 else "➖"
-                        sign = "+" if platinum_change > 0 else ""
-                        lines.append(f"   {emoji} {sign}${platinum_change:.2f} ({sign}{platinum_change_pct:.2f}%)")
+                        lines.append(f"   전일대비 {emoji} {sign}${copper_change:.4f} ({sign}{copper_change_pct:.2f}%)")
                     
                 
                 lines.append("")
@@ -420,7 +557,7 @@ def format_all_crypto_message(coins_data: Dict[str, Dict[str, Any]]) -> str:
     db = SessionLocal()
     try:
         market = db.query(MarketDaily).filter(
-            MarketDaily.date == date.today()
+            MarketDaily.date == datetime.now(timezone(timedelta(hours=9))).date()
         ).order_by(MarketDaily.id.desc()).first()
         if market and market.usd_krw:
             exchange_rate = market.usd_krw
@@ -632,17 +769,28 @@ async def fx_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     
     try:
         market = db.query(MarketDaily).filter(
-            MarketDaily.date == date.today()
+            MarketDaily.date == datetime.now(timezone(timedelta(hours=9))).date()
         ).order_by(MarketDaily.id.desc()).first()
-        
-        yesterday = date.today() - timedelta(days=1)
+
+        kst = timezone(timedelta(hours=9))
+        yesterday = datetime.now(kst).date() - timedelta(days=1)
         market_yesterday = db.query(MarketDaily).filter(
             MarketDaily.date == yesterday
         ).order_by(MarketDaily.id.desc()).first()
-        
+
         if not market or not market.usd_krw:
-            await update.message.reply_text("💱 환율 데이터가 아직 수집되지 않았습니다.")
-            return
+            market = db.query(MarketDaily).order_by(
+                MarketDaily.date.desc(),
+                MarketDaily.id.desc()
+            ).first()
+            if not market or not market.usd_krw:
+                await update.message.reply_text("💱 환율 데이터가 아직 수집되지 않았습니다.")
+                return
+            logger.warning("fx_command fallback to latest market date=%s", market.date)
+            yesterday = market.date - timedelta(days=1)
+            market_yesterday = db.query(MarketDaily).filter(
+                MarketDaily.date == yesterday
+            ).order_by(MarketDaily.id.desc()).first()
         
         usd_krw = market.usd_krw
         yesterday_usd_krw = market_yesterday.usd_krw if market_yesterday else None
@@ -658,6 +806,9 @@ async def fx_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         msg_lines.append("💱 글로벌 환율")
         msg_lines.append("🌍 LIVE EXCHANGE RATES")
         msg_lines.append("")
+        if market.date != datetime.now(timezone(timedelta(hours=9))).date():
+            msg_lines.append(f"※ 최신 데이터 기준: {market.date}")
+            msg_lines.append("")
         msg_lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
         msg_lines.append("")
         msg_lines.append("🇺🇸 USD → 🇰🇷 KRW")
@@ -692,7 +843,9 @@ async def fx_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         msg_lines.append(f"🇵🇭 ₱1 = ₩{php_krw:,.2f}")
         
         await update.message.reply_text("\n".join(msg_lines))
-    
+    except Exception:
+        logger.exception("fx_command failed")
+        await update.message.reply_text("💱 환율 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
     finally:
         db.close()
 
@@ -700,13 +853,14 @@ async def fx_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def metal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """금속 시세 조회 (DB에서) - 전체 금속"""
     from backend.app.db.session import SessionLocal
-    from backend.app.db.models import MarketDaily
+    from backend.app.db.models import MarketDaily, KoreaMetalDaily
     from datetime import date, timedelta
     
     db = SessionLocal()
     
     try:
-        today = date.today()
+        kst = timezone(timedelta(hours=9))
+        today = datetime.now(kst).date()
         yesterday = today - timedelta(days=1)
         
         # 오늘자 MarketDaily 조회
@@ -720,13 +874,23 @@ async def metal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         ).order_by(MarketDaily.id.desc()).first()
         
         if not market_today:
-            await update.message.reply_text(
-                "🥇 금속 시세 데이터가 아직 수집되지 않았습니다.\n\n"
-                "잠시 후 다시 시도해 주세요."
-            )
-            return
+            market_today = db.query(MarketDaily).order_by(
+                MarketDaily.date.desc(),
+                MarketDaily.id.desc()
+            ).first()
+            if not market_today:
+                await update.message.reply_text(
+                    "🥇 금속 시세 데이터가 아직 수집되지 않았습니다.\n\n"
+                    "잠시 후 다시 시도해 주세요."
+                )
+                return
+            logger.warning("metal_command fallback to latest market date=%s", market_today.date)
+            yesterday = market_today.date - timedelta(days=1)
+            market_yesterday = db.query(MarketDaily).filter(
+                MarketDaily.date == yesterday
+            ).order_by(MarketDaily.id.desc()).first()
         
-        def format_metal(name, emoji, usd_price, usd_price_yesterday, unit_type):
+        def format_metal(name, emoji, usd_price, usd_price_yesterday, unit_type, korea_row=None):
             """금속 시세 포맷팅
             unit_type: 0=oz(금/은/백금/팔라디움), 1=lb(구리/알루미늄/니켈/아연/납)
             """
@@ -749,6 +913,25 @@ async def metal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 lines.append(f"1돈 (3.75g) = ₩{per_don:,.0f}")
                 lines.append(f"1g = ₩{per_gram * usd_krw:,.0f}")
                 lines.append(f"국제가격 = ${usd_price:,.2f}/oz")
+
+                if korea_row and korea_row.buy_3_75g:
+                    date_label = None
+                    if korea_row.date_text:
+                        date_label = korea_row.date_text
+                    elif korea_row.date:
+                        date_label = korea_row.date.isoformat()
+                    label = f" (고시 {date_label})" if date_label else ""
+                    lines.append(f"🇰🇷 국내{label}")
+                    lines.append(f"   살때(순금) ₩{korea_row.buy_3_75g:,.0f}")
+                    if korea_row.sell_3_75g:
+                        lines.append(f"   팔때(순금) ₩{korea_row.sell_3_75g:,.0f}")
+                    if korea_row.sell_18k:
+                        lines.append(f"   팔때(18K) ₩{korea_row.sell_18k:,.0f}")
+                    if korea_row.sell_14k:
+                        lines.append(f"   팔때(14K) ₩{korea_row.sell_14k:,.0f}")
+                    premium_pct = (korea_row.buy_3_75g - per_don) / per_don * 100
+                    sign = "+" if premium_pct > 0 else ""
+                    lines.append(f"   프리미엄 {sign}{premium_pct:.2f}% (국내 살때 vs 국제)")
             
             elif unit_type == 1:  # lb (구리/알루미늄/니켈/아연/납)
                 # 1lb = 0.453592kg
@@ -782,15 +965,38 @@ async def metal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         lines.append("🥇 금속 시세")
         lines.append("⚡ LIVE")
         lines.append("")
+        if market_today.date != today:
+            lines.append(f"※ 최신 데이터 기준: {market_today.date}")
+            lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
+
+        korea_gold = (
+            db.query(KoreaMetalDaily)
+            .filter(KoreaMetalDaily.metal == "gold")
+            .order_by(KoreaMetalDaily.date.desc(), KoreaMetalDaily.id.desc())
+            .first()
+        )
+        korea_silver = (
+            db.query(KoreaMetalDaily)
+            .filter(KoreaMetalDaily.metal == "silver")
+            .order_by(KoreaMetalDaily.date.desc(), KoreaMetalDaily.id.desc())
+            .first()
+        )
+        korea_platinum = (
+            db.query(KoreaMetalDaily)
+            .filter(KoreaMetalDaily.metal == "platinum")
+            .order_by(KoreaMetalDaily.date.desc(), KoreaMetalDaily.id.desc())
+            .first()
+        )
         
         # 금 (oz)
         lines.extend(format_metal(
             "금 (Gold)", "💛",
             market_today.gold_usd,
             market_yesterday.gold_usd if market_yesterday else None,
-            0
+            0,
+            korea_gold,
         ))
         lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -801,7 +1007,8 @@ async def metal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "은 (Silver)", "⚪",
             market_today.silver_usd,
             market_yesterday.silver_usd if market_yesterday else None,
-            0
+            0,
+            korea_silver,
         ))
         lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -812,7 +1019,8 @@ async def metal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "백금 (Platinum)", "⚪",
             market_today.platinum_usd,
             market_yesterday.platinum_usd if market_yesterday else None,
-            0
+            0,
+            korea_platinum,
         ))
         lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -882,6 +1090,9 @@ async def metal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         ))
         
         await update.message.reply_text("\n".join(lines))
+    except Exception:
+        logger.exception("metal_command failed")
+        await update.message.reply_text("🥇 금속 시세 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
     finally:
         db.close()
 
@@ -897,20 +1108,29 @@ async def market_indices_command(update: Update, context: ContextTypes.DEFAULT_T
     try:
         # 오늘자 MarketDaily 조회
         market = db.query(MarketDaily).filter(
-            MarketDaily.date == date.today()
+            MarketDaily.date == datetime.now(timezone(timedelta(hours=9))).date()
         ).order_by(MarketDaily.id.desc()).first()
         
         if not market:
-            await update.message.reply_text(
-                "📊 시장 지수 데이터가 아직 수집되지 않았습니다.\n\n"
-                "잠시 후 다시 시도해 주세요."
-            )
-            return
+            market = db.query(MarketDaily).order_by(
+                MarketDaily.date.desc(),
+                MarketDaily.id.desc()
+            ).first()
+            if not market:
+                await update.message.reply_text(
+                    "📊 시장 지수 데이터가 아직 수집되지 않았습니다.\n\n"
+                    "잠시 후 다시 시도해 주세요."
+                )
+                return
+            logger.warning("market_indices_command fallback to latest market date=%s", market.date)
         
         lines = []
         lines.append("📊 시장 지수")
         lines.append("⚡ LIVE")
         lines.append("")
+        if market.date != datetime.now(timezone(timedelta(hours=9))).date():
+            lines.append(f"※ 최신 데이터 기준: {market.date}")
+            lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
         
@@ -963,6 +1183,9 @@ async def market_indices_command(update: Update, context: ContextTypes.DEFAULT_T
                 lines.append("")
         
         await update.message.reply_text("\n".join(lines))
+    except Exception:
+        logger.exception("market_indices_command failed")
+        await update.message.reply_text("📊 시장 지수 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
     finally:
         db.close()
 
@@ -1010,29 +1233,21 @@ async def on_news_category_callback(update: Update, context: ContextTypes.DEFAUL
     }
     
     db = SessionLocal()
-    
+
     try:
-        # 최신 뉴스 우선 (24시간 내, 부족 시 48시간 내)
-        now_utc = datetime.utcnow()
-        cutoff_24h = now_utc - timedelta(hours=24)
-        published_or_created = func.coalesce(NewsDaily.published_at, NewsDaily.created_at)
+        # 오늘자 데이터만 사용
+        candidate_limit = 50
         news_list = db.query(NewsDaily).filter(
             NewsDaily.category == category,
-            published_or_created >= cutoff_24h
+            NewsDaily.date == datetime.now(timezone(timedelta(hours=9))).date()
         ).order_by(
-            published_or_created.desc(),
-            NewsDaily.hot_score.desc()
-        ).limit(5).all()
+            NewsDaily.hot_score.desc(),
+            NewsDaily.created_at.desc()
+        ).limit(candidate_limit).all()
 
-        if not news_list:
-            cutoff_48h = now_utc - timedelta(hours=48)
-            news_list = db.query(NewsDaily).filter(
-                NewsDaily.category == category,
-                published_or_created >= cutoff_48h
-            ).order_by(
-                published_or_created.desc(),
-                NewsDaily.hot_score.desc()
-            ).limit(5).all()
+        if news_list:
+            from backend.app.utils.dedup import remove_duplicate_news
+            news_list = remove_duplicate_news(news_list)[:5]
         
         if not news_list:
             await query.edit_message_text(
@@ -1070,14 +1285,22 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if not subscriber:
             subscriber = Subscriber(
                 chat_id=chat_id,
-                subscribed_alert=True
+                subscribed_alert=True,
+                custom_time="09:10"  # 기본 알림 시간 설정
             )
             db.add(subscriber)
             db.commit()
-            
+
+            # 즉시 스케줄러에 등록
+            try:
+                from backend.app.scheduler.jobs import schedule_user_alerts
+                schedule_user_alerts()
+            except Exception as e:
+                print(f"스케줄러 등록 오류: {e}")
+
             await update.message.reply_text(
                 "✅ 아침 알림 구독이 완료되었습니다!\n\n"
-                "📍 알림 시간: 매일 09:05 (전일대비 포함)\n"
+                "📍 알림 시간: 매일 09:10 (전일대비 포함)\n"
                 "📍 내용: 뉴스, 환율, 코인, KOSPI/나스닥 지수, KOSPI Top5, 금속\n\n"
                 "⏰ /set_time 으로 시간을 변경할 수 있습니다.\n"
                 "⚙️ /settings 로 설정을 확인하세요."
@@ -1091,11 +1314,20 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 )
             else:
                 subscriber.subscribed_alert = True
+                if not subscriber.custom_time:
+                    subscriber.custom_time = "09:10"
                 db.commit()
-                
+
+                # 즉시 스케줄러에 등록
+                try:
+                    from backend.app.scheduler.jobs import schedule_user_alerts
+                    schedule_user_alerts()
+                except Exception as e:
+                    print(f"스케줄러 등록 오류: {e}")
+
                 await update.message.reply_text(
                     "✅ 알림 구독이 다시 활성화되었습니다!\n\n"
-                    f"📍 알림 시간: 매일 {subscriber.custom_time or '09:05'}\n"
+                    f"📍 알림 시간: 매일 {subscriber.custom_time}\n"
                     "⚙️ /settings 로 설정을 확인하세요."
                 )
     finally:
@@ -1319,7 +1551,7 @@ async def handle_text_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
         await fx_command(update, context)
     elif text == "🥇 금속 조회하기":
         await metal_command(update, context)
-    elif text == "🎰 로또 번호 생성":
+    elif text in ("🎰 로또 번호 생성", "🎰 로또 번호"):
         await lotto_command(update, context)
     elif text.isdigit() and 1 <= len(text) <= 4:
         try:
@@ -1335,27 +1567,7 @@ async def handle_text_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("아래 버튼을 이용해보세요 😊")
 
 
-def main() -> None:
-    token = settings.TELEGRAM_TOKEN
-    if not token:
-        raise RuntimeError("TELEGRAM_TOKEN is not set in environment variables")
-
-    # 봇 시작 시 기존 속보 모두 "전송됨"으로 표시 (중복 알림 방지)
-    from backend.app.db.session import SessionLocal
-    from backend.app.db.models import NewsDaily
-    db = SessionLocal()
-    try:
-        db.query(NewsDaily).filter(
-            NewsDaily.is_breaking.is_(True),
-            NewsDaily.alert_sent.is_(False)
-        ).update({NewsDaily.alert_sent: True})
-        db.commit()
-        print("✅ 기존 속보 초기화 완료")
-    except Exception as e:
-        print(f"⚠️ 속보 초기화 실패: {e}")
-    finally:
-        db.close()
-
+def _build_application(token: str):
     application = ApplicationBuilder().token(token).build()
     application.add_error_handler(_on_app_error)
 
@@ -1368,15 +1580,58 @@ def main() -> None:
     application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
     application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CommandHandler("lotto", lotto_command))
+    application.add_handler(CommandHandler("lotto_result", lotto_result_command))
+    application.add_handler(CommandHandler("lotto_performance", lotto_performance_command))
     application.add_handler(CommandHandler("set_time", set_time_command))
     application.add_handler(CallbackQueryHandler(on_timeframe_callback, pattern="^tf:"))
     application.add_handler(CallbackQueryHandler(on_crypto_callback, pattern="^crypto_"))
     application.add_handler(CallbackQueryHandler(on_set_time_callback, pattern="^settime:"))
     application.add_handler(CallbackQueryHandler(on_news_category_callback, pattern="^news:"))
+    application.add_handler(CallbackQueryHandler(lotto_generate_callback, pattern="^lotto_gen:"))
     application.add_handler(CallbackQueryHandler(lotto_result_callback, pattern="^lotto_result:"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_buttons))
+    return application
 
-    application.run_polling()
+
+def main() -> None:
+    token = settings.TELEGRAM_TOKEN
+    if not token:
+        raise RuntimeError("TELEGRAM_TOKEN is not set in environment variables")
+
+    # 봇 시작 시 오래된 속보만 "전송됨"으로 표시 (중복 알림 방지)
+    # 최근 1시간 이내 속보는 보존하여 재시작 후에도 전송 가능하도록 함
+    from backend.app.db.session import SessionLocal
+    from backend.app.db.models import NewsDaily
+    from datetime import datetime, timedelta, timezone as dt_timezone
+
+    db = SessionLocal()
+    try:
+        kst = dt_timezone(timedelta(hours=9))
+        cutoff_time = datetime.now(kst) - timedelta(hours=1)
+
+        # 1시간 이전 미전송 속보만 전송됨으로 표시
+        updated_count = db.query(NewsDaily).filter(
+            NewsDaily.is_breaking.is_(True),
+            NewsDaily.alert_sent.is_(False),
+            NewsDaily.created_at < cutoff_time
+        ).update({NewsDaily.alert_sent: True})
+        db.commit()
+        print(f"✅ 오래된 속보 초기화 완료 ({updated_count}건, 1시간 이전 뉴스)")
+    except Exception as e:
+        print(f"⚠️ 속보 초기화 실패: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+    retry_delay = 30
+    while True:
+        application = _build_application(token)
+        try:
+            application.run_polling()
+            break
+        except Exception as e:
+            logger.exception("Telegram polling crashed: %s. Retry in %ss", e, retry_delay)
+            time.sleep(retry_delay)
 
 
 if __name__ == "__main__":

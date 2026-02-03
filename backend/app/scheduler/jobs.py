@@ -1,32 +1,34 @@
 from typing import Optional
+from pathlib import Path
+import json
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy.orm import Session
 import logging
 import json
-from datetime import datetime, time as time_type
+from datetime import datetime, time as time_type, timedelta, timezone
 from backend.app.db.session import SessionLocal
-from backend.app.db.models import Subscriber, LottoDraw, LottoStatsCache
+from backend.app.db.models import Subscriber, LottoDraw, LottoStatsCache, NotificationLog
 from backend.app.collectors.news_collector_v3 import build_daily_top5_v3, collect_breaking_news
 from backend.app.collectors.market_collector import collect_market_daily, calculate_daily_changes
-from backend.app.services.notification_service import send_morning_brief_to_all, send_breaking_batch
+from backend.app.collectors.koreagoldx_collector import collect_korea_metal_daily
+from backend.app.services.notification_service import send_morning_brief_to_all, send_breaking_batch, send_morning_brief_to_chat
 from backend.app.collectors.lotto.api_client import LottoAPIClient
 from backend.app.services.lotto.stats_calculator import LottoStatsCalculator
+from backend.app.services.lotto.performance_evaluator import evaluate_latest_draw
+from backend.app.services.lotto.grid_search_retrainer import check_and_retrain_if_needed
 
 logger = logging.getLogger(__name__)
 scheduler: Optional[BackgroundScheduler] = None
 
-def _get_db() -> Session:
-    return SessionLocal()
-
 def job_collect_breaking_news() -> None:
     """속보 수집만 (전송 안 함)"""
-    db = _get_db()
+    db = SessionLocal()
     try:
         new_items = collect_breaking_news(db)
-        
+
         if new_items:
             logger.info(f"Collected {len(new_items)} new breaking news items")
-        
+
     except Exception as e:
         logger.error(f"Breaking news collection failed: {e}")
         db.rollback()
@@ -35,23 +37,39 @@ def job_collect_breaking_news() -> None:
 
 def job_send_breaking_batch() -> None:
     """속보 배치 전송 (12시, 18시, 22시)"""
-    db = _get_db()
+    db = SessionLocal()
     try:
         from backend.app.db.models import NewsDaily
-        from datetime import date
-        
-        # 오늘 알림 안 보낸 속보 조회
+        from datetime import date, datetime, timedelta, timezone
+
+        now_kst = datetime.now(timezone(timedelta(hours=9)))
+        if now_kst.minute != 0 or now_kst.hour not in (12, 18, 22):
+            logger.info(
+                "Breaking batch skipped (outside schedule): %s",
+                now_kst.strftime("%H:%M"),
+            )
+            return
+
+        # 오늘 알림 안 보낸 속보 조회 (최근 6시간만, KST 기준)
+        cutoff = now_kst.replace(tzinfo=None) - timedelta(hours=6)
+        today_kst = now_kst.date()
         unsent = db.query(NewsDaily).filter(
-            NewsDaily.date == date.today(),
+            NewsDaily.date == today_kst,
             NewsDaily.is_breaking.is_(True),
-            NewsDaily.alert_sent.is_(False)
+            NewsDaily.alert_sent.is_(False),
+            NewsDaily.created_at >= cutoff,
         ).order_by(NewsDaily.hot_score.desc()).all()
         
         if not unsent:
-            logger.info("No breaking news to send")
+            logger.info("No breaking news to send (unsent=0)")
             return
         
-        logger.info(f"Sending batch of {len(unsent)} breaking news")
+        try:
+            newest = max(n.created_at for n in unsent if n.created_at)
+            oldest = min(n.created_at for n in unsent if n.created_at)
+            logger.info("Sending breaking batch: count=%s range=%s..%s", len(unsent), oldest, newest)
+        except Exception:
+            logger.info("Sending breaking batch: count=%s", len(unsent))
         
         # 배치 전송
         sent_count = send_breaking_batch(db, unsent)
@@ -66,13 +84,34 @@ def job_send_breaking_batch() -> None:
 
 def job_morning_all() -> None:
     """9시 1분: 모든 데이터 수집"""
-    db = _get_db()
+    db = SessionLocal()
     try:
         logger.info("=== 9시 1분 데이터 수집 시작 ===")
 
-        # 1. 시장 데이터 수집
-        collect_market_daily(db)
-        logger.info("✅ 시장 데이터 수집")
+        # 1. 시장 데이터 수집 (하루 1회만)
+        from datetime import date as date_type
+        from backend.app.db.models import MarketDaily
+
+        today = date_type.today()
+        latest_market = (
+            db.query(MarketDaily)
+            .filter(MarketDaily.date == today)
+            .order_by(MarketDaily.id.desc())
+            .first()
+        )
+
+        if latest_market and latest_market.usd_krw:
+            logger.info("✅ 시장 데이터 수집 스킵 (오늘 데이터 존재)")
+        else:
+            collect_market_daily(db)
+            logger.info("✅ 시장 데이터 수집")
+
+        # 1-1. 국내 금/은/백금 시세 수집
+        collected = collect_korea_metal_daily(db)
+        if collected:
+            logger.info("✅ 국내 금속 시세 수집: %s건", len(collected))
+        else:
+            logger.info("ℹ️ 국내 금속 시세 수집 결과 없음")
 
         # 2. 뉴스 수집
         build_daily_top5_v3(db)
@@ -86,9 +125,67 @@ def job_morning_all() -> None:
     finally:
         db.close()
 
+
+def job_retry_market_collection() -> None:
+    """시장 데이터 재수집 (오늘 데이터가 없거나 주요 항목 누락 시)"""
+    db = SessionLocal()
+    try:
+        from backend.app.db.models import MarketDaily
+        from backend.app.db.session import SessionLocal
+
+        # KST 기준 오늘 날짜 (타임존 안전)
+        kst = timezone(timedelta(hours=9))
+        today = datetime.now(kst).date()
+        latest = (
+            db.query(MarketDaily)
+            .filter(MarketDaily.date == today)
+            .order_by(MarketDaily.id.desc())
+            .first()
+        )
+
+        def _is_incomplete(row: MarketDaily) -> bool:
+            return any(
+                value is None
+                for value in (
+                    row.usd_krw,
+                    row.kospi_index,
+                    row.nasdaq_index,
+                    row.gold_usd,
+                    row.silver_usd,
+                )
+            )
+
+        # 재시도 최소 간격 (API 호출 과다 방지)
+        state_path = Path("logs") / "market_retry_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        last_attempt = None
+        if state_path.exists():
+            try:
+                data = json.loads(state_path.read_text())
+                last_attempt = datetime.fromisoformat(data.get("last_attempt"))
+            except Exception:
+                last_attempt = None
+
+        min_interval = timedelta(minutes=90)
+        if last_attempt and datetime.now() - last_attempt < min_interval:
+            logger.info("시장 데이터 재수집 건너뜀 (쿨다운)")
+            return
+
+        if not latest or _is_incomplete(latest):
+            logger.warning("시장 데이터 재수집 실행 (오늘 데이터 부족)")
+            state_path.write_text(json.dumps({"last_attempt": datetime.now().isoformat()}))
+            collect_market_daily(db)
+        else:
+            logger.info("시장 데이터 재수집 건너뜀 (오늘 데이터 정상)")
+    except Exception as e:
+        logger.error(f"시장 데이터 재수집 실패: {e}", exc_info=True)
+        db.rollback()
+    finally:
+        db.close()
+
 def job_calculate_changes_and_send() -> None:
     """9시 5분: 전일대비 계산 + 모닝 브리핑 전송"""
-    db = _get_db()
+    db = SessionLocal()
     try:
         logger.info("=== 9시 5분 전일대비 계산 + 전송 시작 ===")
 
@@ -108,9 +205,25 @@ def job_calculate_changes_and_send() -> None:
     finally:
         db.close()
 
+def job_send_morning_brief_for_user(chat_id: str) -> None:
+    """사용자 1명에게만 아침 브리핑 전송"""
+    db = SessionLocal()
+    try:
+        calculate_daily_changes(db)
+        success = send_morning_brief_to_chat(db, chat_id)
+        if success:
+            logger.info(f"Morning brief sent to {chat_id}")
+        else:
+            logger.error(f"Morning brief send failed to {chat_id} (send_morning_brief_to_chat returned False)")
+    except Exception as e:
+        logger.error(f"User brief send failed ({chat_id}): {e}", exc_info=True)
+        db.rollback()
+    finally:
+        db.close()
+
 def job_lotto_weekly_update() -> None:
     """매주 토요일 21:00: 로또 당첨번호 업데이트"""
-    db = _get_db()
+    db = SessionLocal()
     try:
         logger.info("=== 로또 주간 업데이트 시작 ===")
 
@@ -205,6 +318,20 @@ def job_lotto_weekly_update() -> None:
         db.commit()
         logger.info("✅ 통계 캐시 갱신 완료")
 
+        # 4. ML 모델 재학습 (신규 회차가 있을 때만)
+        if new_count > 0:
+            logger.info("ML 모델 재학습 시작...")
+            try:
+                from backend.app.services.lotto.ml_trainer import LottoMLTrainer
+                trainer = LottoMLTrainer()
+                result = trainer.train(draws_dict, test_size=0.2)
+                logger.info(f"✅ ML 모델 재학습 완료 - Train: {result['train_accuracy']:.4f}, Test: {result['test_accuracy']:.4f}")
+                logger.info(f"   가중치: L1={result['ai_weights']['logic1']:.4f}, L2={result['ai_weights']['logic2']:.4f}, L3={result['ai_weights']['logic3']:.4f}, L4={result['ai_weights']['logic4']:.4f}")
+            except Exception as e:
+                logger.error(f"⚠️ ML 모델 재학습 실패: {e}")
+        else:
+            logger.info("신규 회차 없음, ML 재학습 스킵")
+
         logger.info(f"=== 로또 업데이트 완료: 신규 {new_count}개, 전체 {len(draws_dict)}회 ===")
 
     except Exception as e:
@@ -213,32 +340,123 @@ def job_lotto_weekly_update() -> None:
     finally:
         db.close()
 
+
+def job_lotto_performance_evaluation() -> None:
+    """매주 일요일 10:00: 로또 ML 성능 평가 및 자동 재학습"""
+    try:
+        logger.info("=== 로또 ML 성능 평가 시작 ===")
+
+        # 1. 최신 회차 성능 평가 (내부적으로만 실행, 사용자에게 알림 없음)
+        evaluate_latest_draw()
+        logger.info("✅ 성능 평가 완료")
+
+        # 2. 성능이 낮으면 자동 재학습 (Grid Search)
+        check_and_retrain_if_needed()
+        logger.info("✅ 재학습 확인 완료")
+
+        logger.info("=== 로또 ML 성능 평가 완료 ===")
+
+    except Exception as e:
+        logger.error(f"로또 ML 성능 평가 실패: {e}", exc_info=True)
+
+def job_retry_failed_notifications() -> None:
+    """실패한 알림 재전송 (매 30분마다)"""
+    db = SessionLocal()
+    try:
+        # KST 기준 날짜 사용 (타임존 안전)
+        kst = timezone(timedelta(hours=9))
+        today = datetime.now(kst).date()
+        yesterday = today - timedelta(days=1)
+
+        # 재시도 대상: 오늘/어제 알림 중 pending_retry 상태이고 max_retries 미만
+        failed_logs = db.query(NotificationLog).filter(
+            NotificationLog.status == "pending_retry",
+            NotificationLog.retry_count < NotificationLog.max_retries,
+            NotificationLog.scheduled_date.in_([today, yesterday])
+        ).all()
+
+        if not failed_logs:
+            logger.info("No failed notifications to retry")
+            return
+
+        logger.info(f"Retrying {len(failed_logs)} failed notifications")
+
+        success_count = 0
+        still_failed_count = 0
+
+        for log in failed_logs:
+            # 재전송 시도
+            from backend.app.services.notification_service import send_morning_brief_to_chat
+            success = send_morning_brief_to_chat(db, log.chat_id)
+
+            if success:
+                success_count += 1
+            else:
+                still_failed_count += 1
+
+        logger.info(
+            f"Notification retry complete: {success_count} succeeded, {still_failed_count} still failed"
+        )
+
+    except Exception as e:
+        logger.error(f"Failed notification retry job failed: {e}", exc_info=True)
+        db.rollback()
+    finally:
+        db.close()
+
+
 def schedule_user_alerts() -> None:
     """사용자별 맞춤 시간 알림 등록"""
     from backend.app.db.models import Subscriber
-    db = _get_db()
-    
+    db = SessionLocal()
+
     try:
         subscribers = db.query(Subscriber).filter(
             Subscriber.subscribed_alert.is_(True)
         ).all()
         
+        collect_times = set()
         for subscriber in subscribers:
-            if subscriber.custom_time:
-                hour, minute = map(int, subscriber.custom_time.split(":"))
-                
-                job_id = f"user_alert_{subscriber.chat_id}"
-                
-                if scheduler.get_job(job_id):
-                    scheduler.remove_job(job_id)
-                
+            alert_time = subscriber.custom_time or "09:10"
+            hour, minute = map(int, alert_time.split(":"))
+
+            alert_job_id = f"user_alert_{subscriber.chat_id}"
+
+            if scheduler.get_job(alert_job_id):
+                scheduler.remove_job(alert_job_id)
+
+            # 발송 스케줄
+            scheduler.add_job(
+                job_send_morning_brief_for_user,
+                "cron",
+                hour=hour,
+                minute=minute,
+                id=alert_job_id,
+                replace_existing=True,
+                args=[subscriber.chat_id],
+            )
+
+            # 수집 스케줄 (발송 5분 전)
+            collect_minute = (minute - 5) % 60
+            collect_hour = hour if minute >= 5 else (hour - 1) % 24
+            collect_times.add((collect_hour, collect_minute))
+
+        # 시간별 수집 스케줄은 1회만 등록
+        active_collect_ids = {f"collect_time_{h:02d}_{m:02d}" for h, m in collect_times}
+        for job in scheduler.get_jobs():
+            if job.id.startswith("collect_time_") and job.id not in active_collect_ids:
+                scheduler.remove_job(job.id)
+
+        for collect_hour, collect_minute in collect_times:
+            collect_job_id = f"collect_time_{collect_hour:02d}_{collect_minute:02d}"
+            if not scheduler.get_job(collect_job_id):
                 scheduler.add_job(
-                    job_calculate_changes_and_send,
+                    job_morning_all,
                     "cron",
-                    hour=hour,
-                    minute=minute,
-                    id=job_id,
-                    replace_existing=True
+                    hour=collect_hour,
+                    minute=collect_minute,
+                    id=collect_job_id,
+                    replace_existing=True,
                 )
         
         logger.info(f"Scheduled alerts for {len(subscribers)} subscribers")
@@ -249,39 +467,35 @@ def schedule_user_alerts() -> None:
 
 def start_scheduler() -> None:
     global scheduler
-    
+
     if scheduler is not None:
         logger.warning("Scheduler already running")
         return
+
+    # APScheduler 타임존 설정: 한국 시간 (KST)
+    from apscheduler.schedulers.background import BackgroundScheduler
+    from datetime import timezone, timedelta
+
+    kst = timezone(timedelta(hours=9))
+    scheduler = BackgroundScheduler(timezone=kst)
     
-    scheduler = BackgroundScheduler()
+    # 전일대비 계산 + 브리핑 전송은 사용자별 스케줄로만 처리
     
-    # 9시 1분: 데이터 수집만
-    scheduler.add_job(
-        job_morning_all,
-        "cron",
-        hour="9,13,18",
-        minute=1,
-        id="morning_data_collection",
-        replace_existing=True,
-    )
-    
-    # 9시 5분: 전일대비 계산 + 모닝 브리핑 전송
-    scheduler.add_job(
-        job_calculate_changes_and_send,
-        "cron",
-        hour="9,13,18",
-        minute=5,
-        id="morning_calculate_and_send",
-        replace_existing=True,
-    )
-    
-    # 매시간: 속보 수집만
+    # 매시간: 속보 수집만 (매시 55분, 배치 전 5분 확보)
     scheduler.add_job(
         job_collect_breaking_news,
-        "interval",
-        hours=1,
+        "cron",
+        minute=55,
         id="collect_breaking_news",
+        replace_existing=True,
+    )
+    # 시작 직후 1회 즉시 수집 (첫 배치 전 공백 방지)
+    from datetime import timezone
+    scheduler.add_job(
+        job_collect_breaking_news,
+        "date",
+        run_date=datetime.now(timezone.utc),
+        id="collect_breaking_news_bootstrap",
         replace_existing=True,
     )
     
@@ -306,6 +520,18 @@ def start_scheduler() -> None:
         replace_existing=True,
     )
 
+    # 로또 ML 성능 평가 및 재학습: 매주 토요일 22:00 (내부 평가만, 사용자 알림 없음)
+    # 로또 당첨번호 수집(21시) 1시간 후 실행
+    scheduler.add_job(
+        job_lotto_performance_evaluation,
+        "cron",
+        day_of_week="sat",
+        hour=22,
+        minute=0,
+        id="lotto_performance_evaluation",
+        replace_existing=True,
+    )
+
     # 사용자별 맞춤 시간 알림 스케줄 등록
     schedule_user_alerts()
 
@@ -318,8 +544,19 @@ def start_scheduler() -> None:
         replace_existing=True
     )
 
+    # 실패한 알림 재전송 (매 30분)
+    scheduler.add_job(
+        job_retry_failed_notifications,
+        "interval",
+        minutes=30,
+        id="retry_failed_notifications",
+        replace_existing=True
+    )
+
+    # 시장 데이터 재수집은 비활성화 (하루 1회 수집 유지)
+
     scheduler.start()
-    logger.info("Scheduler started - 9:01 수집, 9:05 계산+전송, Breaking 12/18/22, Lotto 토요일 21:00")
+    logger.info("Scheduler started - user-specific alerts + pre-collection, Breaking 12/18/22, Lotto 토요일 21:00, Lotto ML 토요일 22:00, Retry every 30min")
 
 def stop_scheduler() -> None:
     global scheduler
