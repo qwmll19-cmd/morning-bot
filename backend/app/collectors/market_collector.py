@@ -24,6 +24,24 @@ NAVER_KOSPI_MARKET_SUM_URL = (
 # Metals.Dev API (전체 금속 시세)
 METALSDEV_BASE_URL = "https://api.metals.dev/v1/latest"
 
+# 네이버 환율 API
+NAVER_EXCHANGE_RATE_URL = "https://api.stock.naver.com/marketindex/exchange"
+
+# 지원하는 환율 통화 코드 (네이버 API 기준)
+EXCHANGE_CURRENCIES = {
+    "USD": {"code": "FX_USDKRW", "name": "미국 달러", "emoji": "🇺🇸", "symbol": "$"},
+    "EUR": {"code": "FX_EURKRW", "name": "유로", "emoji": "🇪🇺", "symbol": "€"},
+    "JPY": {"code": "FX_JPYKRW", "name": "일본 엔", "emoji": "🇯🇵", "symbol": "¥", "unit": 100},
+    "CNY": {"code": "FX_CNYKRW", "name": "중국 위안", "emoji": "🇨🇳", "symbol": "¥"},
+    "GBP": {"code": "FX_GBPKRW", "name": "영국 파운드", "emoji": "🇬🇧", "symbol": "£"},
+    "SGD": {"code": "FX_SGDKRW", "name": "싱가포르 달러", "emoji": "🇸🇬", "symbol": "S$"},
+    "THB": {"code": "FX_THBKRW", "name": "태국 바트", "emoji": "🇹🇭", "symbol": "฿"},
+    "VND": {"code": "FX_VNDKRW", "name": "베트남 동", "emoji": "🇻🇳", "symbol": "₫", "unit": 100},
+    "PHP": {"code": "FX_PHPKRW", "name": "필리핀 페소", "emoji": "🇵🇭", "symbol": "₱"},
+    "IDR": {"code": "FX_IDRKRW", "name": "인도네시아 루피아", "emoji": "🇮🇩", "symbol": "Rp", "unit": 100},
+    "MYR": {"code": "FX_MYRKRW", "name": "말레이시아 링깃", "emoji": "🇲🇾", "symbol": "RM"},
+}
+
 
 def _get_with_retry(
     url: str,
@@ -100,6 +118,88 @@ def fetch_usd_krw_rate() -> Optional[float]:
         logger.error(f"USD/KRW 환율을 응답에서 찾을 수 없습니다. 응답 구조: {list(data.keys())}")
 
     return _safe_float(krw)
+
+
+def fetch_exchange_rates_naver() -> Dict[str, Dict[str, Any]]:
+    """
+    네이버 환율 API에서 모든 통화의 환율을 수집합니다.
+
+    Returns:
+        {
+            "USD": {"rate": 1448.50, "change": -5.00, "change_pct": -0.34, "unit": 1},
+            "EUR": {"rate": 1710.97, "change": -2.13, "change_pct": -0.12, "unit": 1},
+            "JPY": {"rate": 932.32, "change": -1.54, "change_pct": -0.17, "unit": 100},
+            ...
+        }
+    """
+    result: Dict[str, Dict[str, Any]] = {}
+
+    for currency, info in EXCHANGE_CURRENCIES.items():
+        try:
+            url = f"{NAVER_EXCHANGE_RATE_URL}/{info['code']}"
+
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                resp.raise_for_status()
+                data = resp.json()
+
+            # 네이버 API 응답은 exchangeInfo 내부에 데이터가 있음
+            exchange_info = data.get("exchangeInfo", {})
+
+            # 환율 파싱
+            rate_str = exchange_info.get("closePrice", "0")
+            rate = _safe_float(rate_str.replace(",", ""))
+
+            # 전일대비 파싱 (fluctuations 필드 사용)
+            change_str = exchange_info.get("fluctuations", "0")
+            change = _safe_float(change_str.replace(",", ""))
+
+            # 등락률 파싱
+            change_pct_str = exchange_info.get("fluctuationsRatio", "0")
+            change_pct = _safe_float(change_pct_str)
+
+            # 상승/하락 판단 (fluctuationsType.name 필드 사용)
+            fluctuations_type = exchange_info.get("fluctuationsType", {})
+            is_rising = fluctuations_type.get("name") == "RISING"
+
+            # 하락인 경우 음수로 변환 (API가 이미 음수로 주는 경우도 있음)
+            if not is_rising and change and change > 0:
+                change = -change
+            if not is_rising and change_pct and change_pct > 0:
+                change_pct = -change_pct
+
+            unit = info.get("unit", 1)
+
+            result[currency] = {
+                "rate": rate,
+                "change": change,
+                "change_pct": change_pct,
+                "unit": unit,
+                "name": info["name"],
+                "emoji": info["emoji"],
+                "symbol": info["symbol"],
+            }
+
+            logger.debug(f"환율 수집 완료: {currency} = {rate}")
+
+        except Exception as e:
+            logger.warning(f"환율 수집 실패 ({currency}): {e}")
+            # 실패한 통화는 None 값으로 저장
+            result[currency] = {
+                "rate": None,
+                "change": None,
+                "change_pct": None,
+                "unit": info.get("unit", 1),
+                "name": info["name"],
+                "emoji": info["emoji"],
+                "symbol": info["symbol"],
+            }
+
+    # 수집 결과 로그
+    success_count = sum(1 for v in result.values() if v.get("rate") is not None)
+    logger.info(f"네이버 환율 수집 완료: {success_count}/{len(EXCHANGE_CURRENCIES)}개 성공")
+
+    return result
 
 
 def fetch_btc_from_coinpaprika() -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
@@ -655,7 +755,18 @@ def collect_market_daily(db: Session) -> MarketDaily:
     kst = timezone(timedelta(hours=9))
     today = datetime.now(kst).date()
 
-    usd_krw = fetch_usd_krw_rate()
+    # 네이버 API로 전체 환율 수집 (USD 포함)
+    exchange_rates = fetch_exchange_rates_naver()
+
+    # USD/KRW는 레거시 호환성을 위해 별도 저장
+    usd_data = exchange_rates.get("USD", {})
+    usd_krw = usd_data.get("rate")
+
+    # 네이버 API 실패 시 UniRate로 폴백
+    if usd_krw is None:
+        logger.warning("네이버 환율 API 실패, UniRate로 폴백")
+        usd_krw = fetch_usd_krw_rate()
+
     btc_usdt, btc_krw, btc_usd, btc_change_24h = fetch_btc_from_coinpaprika()
     
     # Metals.Dev로 전체 금속 시세 수집
@@ -690,6 +801,12 @@ def collect_market_daily(db: Session) -> MarketDaily:
             return value
 
         usd_krw = _fallback(usd_krw, previous.usd_krw, "usd_krw")
+        # exchange_rates fallback (모든 환율이 None이면 이전 데이터 사용)
+        prev_exchange_rates = getattr(previous, 'exchange_rates', None)
+        all_rates_none = all(v.get("rate") is None for v in exchange_rates.values()) if exchange_rates else True
+        if all_rates_none and prev_exchange_rates:
+            exchange_rates = prev_exchange_rates
+            missing_fields.append("exchange_rates")
         btc_usdt = _fallback(btc_usdt, previous.btc_usdt, "btc_usdt")
         btc_usd = _fallback(btc_usd, previous.btc_usd, "btc_usd")
         btc_change_24h = _fallback(btc_change_24h, previous.btc_change_24h, "btc_change_24h")
@@ -727,11 +844,12 @@ def collect_market_daily(db: Session) -> MarketDaily:
     market = MarketDaily(
         date=today,
         usd_krw=usd_krw,
+        exchange_rates=exchange_rates,  # 네이버 환율 API (전체 통화)
         btc_usdt=btc_usdt,
         btc_krw=btc_krw,
         btc_usd=btc_usd,
         btc_change_24h=btc_change_24h,
-        
+
         # Metals.Dev에서 수집한 금속 시세
         gold_usd=metals['gold'],
         silver_usd=metals['silver'],
@@ -742,7 +860,7 @@ def collect_market_daily(db: Session) -> MarketDaily:
         nickel_usd=metals['nickel'],
         zinc_usd=metals['zinc'],
         lead_usd=metals['lead'],
-        
+
         kospi_index=kospi_data.get("index"),
         kospi_top5=kospi_top5,
         kosdaq_index=kosdaq_data.get("index"),

@@ -65,7 +65,6 @@ async def _on_app_error(update, context):
 
 
 COINPAPRIKA_TICKER_URL = "https://api.coinpaprika.com/v1/tickers"
-UNIRATE_BASE_URL = "https://api.unirateapi.com/api"
 
 SUPPORTED_COINS: Dict[str, str] = {
     "BTC": "btc-bitcoin",
@@ -780,94 +779,115 @@ async def on_timeframe_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def fx_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """환율 조회 (DB에서 + 교차환율)"""
+    """환율 조회 (네이버 환율 API 기반 - 11개 통화 + 전일대비)"""
     from backend.app.db.session import SessionLocal
     from backend.app.db.models import MarketDaily
     from datetime import date, timedelta
-    
+
     db = SessionLocal()
-    
+
     try:
-        market = db.query(MarketDaily).filter(
-            MarketDaily.date == datetime.now(timezone(timedelta(hours=9))).date()
-        ).order_by(MarketDaily.id.desc()).first()
-
         kst = timezone(timedelta(hours=9))
-        yesterday = datetime.now(kst).date() - timedelta(days=1)
-        market_yesterday = db.query(MarketDaily).filter(
-            MarketDaily.date == yesterday
+        today = datetime.now(kst).date()
+
+        # 오늘 데이터 조회
+        market = db.query(MarketDaily).filter(
+            MarketDaily.date == today
         ).order_by(MarketDaily.id.desc()).first()
 
+        # 오늘 데이터 없으면 최신 데이터 사용
         if not market or not market.usd_krw:
             market = db.query(MarketDaily).order_by(
                 MarketDaily.date.desc(),
                 MarketDaily.id.desc()
             ).first()
             if not market or not market.usd_krw:
-                await update.message.reply_text("💱 환율 데이터가 아직 수집되지 않았습니다.")
+                await update.message.reply_text("환율 데이터가 아직 수집되지 않았습니다.")
                 return
             logger.warning("fx_command fallback to latest market date=%s", market.date)
-            yesterday = market.date - timedelta(days=1)
-            market_yesterday = db.query(MarketDaily).filter(
-                MarketDaily.date == yesterday
-            ).order_by(MarketDaily.id.desc()).first()
-        
-        usd_krw = market.usd_krw
-        yesterday_usd_krw = market_yesterday.usd_krw if market_yesterday else None
-        
-        # 고정 환율
-        usd_eur = 0.92
-        usd_jpy = 149.0
-        usd_cny = 7.24
-        usd_thb = 34.5
-        usd_php = 56.5
-        
+
+        # exchange_rates JSON 데이터 확인
+        exchange_rates = getattr(market, 'exchange_rates', None) or {}
+
         msg_lines = []
-        msg_lines.append("💱 글로벌 환율")
-        msg_lines.append("🌍 LIVE EXCHANGE RATES")
+        msg_lines.append("글로벌 환율 (네이버 기준)")
         msg_lines.append("")
-        if market.date != datetime.now(timezone(timedelta(hours=9))).date():
-            msg_lines.append(f"※ 최신 데이터 기준: {market.date}")
+
+        if market.date != today:
+            msg_lines.append(f"* 기준일: {market.date}")
             msg_lines.append("")
+
+        msg_lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        # 주요 통화 (USD, EUR, JPY, CNY, GBP)
+        msg_lines.append("")
+        msg_lines.append("주요 통화")
+        msg_lines.append("")
+
+        major_currencies = ["USD", "EUR", "JPY", "CNY", "GBP"]
+        for currency in major_currencies:
+            line = _format_exchange_rate_line(currency, exchange_rates, market)
+            if line:
+                msg_lines.append(line)
+
+        # 동남아 통화 (SGD, THB, VND, PHP, IDR, MYR)
+        msg_lines.append("")
         msg_lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
         msg_lines.append("")
-        msg_lines.append("🇺🇸 USD → 🇰🇷 KRW")
-        msg_lines.append(f"💵 $1 = ₩{usd_krw:,.2f}")
-        
-        if yesterday_usd_krw:
-            change = usd_krw - yesterday_usd_krw
-            change_percent = (change / yesterday_usd_krw) * 100
-            emoji = "🔺" if change > 0 else "🔻" if change < 0 else "➖"
-            sign = "+" if change > 0 else ""
-            msg_lines.append(f"{emoji} 전일대비 {sign}{change:.2f} ({sign}{change_percent:.2f}%)")
-        
+        msg_lines.append("동남아 통화")
         msg_lines.append("")
-        msg_lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        msg_lines.append("")
-        msg_lines.append("기타 환율")
-        msg_lines.append("")
-        
-        eur_krw = usd_krw / usd_eur
-        msg_lines.append(f"🇪🇺 €1 = ₩{eur_krw:,.2f}")
-        
-        jpy_krw_100 = 100 * (usd_krw / usd_jpy)
-        msg_lines.append(f"🇯🇵 ¥100 = ₩{jpy_krw_100:,.2f}")
-        
-        cny_krw = usd_krw / usd_cny
-        msg_lines.append(f"🇨🇳 ¥1 = ₩{cny_krw:,.2f}")
-        
-        thb_krw = usd_krw / usd_thb
-        msg_lines.append(f"🇹🇭 ฿1 = ₩{thb_krw:,.2f}")
-        
-        php_krw = usd_krw / usd_php
-        msg_lines.append(f"🇵🇭 ₱1 = ₩{php_krw:,.2f}")
-        
+
+        sea_currencies = ["SGD", "THB", "VND", "PHP", "IDR", "MYR"]
+        for currency in sea_currencies:
+            line = _format_exchange_rate_line(currency, exchange_rates, market)
+            if line:
+                msg_lines.append(line)
+
         await update.message.reply_text("\n".join(msg_lines))
     except Exception:
         logger.exception("fx_command failed")
-        await update.message.reply_text("💱 환율 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
+        await update.message.reply_text("환율 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
     finally:
         db.close()
+
+
+def _format_exchange_rate_line(currency: str, exchange_rates: dict, market) -> str:
+    """환율 한 줄 포맷팅 (전일대비 포함)"""
+    data = exchange_rates.get(currency, {})
+
+    rate = data.get("rate")
+    change = data.get("change")
+    change_pct = data.get("change_pct")
+    unit = data.get("unit", 1)
+    emoji = data.get("emoji", "")
+    symbol = data.get("symbol", "")
+    name = data.get("name", currency)
+
+    # rate가 없으면 레거시 usd_krw 사용 (USD만)
+    if rate is None and currency == "USD":
+        rate = market.usd_krw
+        change = getattr(market, 'usd_krw_change', None)
+        change_pct = getattr(market, 'usd_krw_change_pct', None)
+        emoji = "🇺🇸"
+        symbol = "$"
+        name = "미국 달러"
+        unit = 1
+
+    if rate is None:
+        return ""
+
+    # 단위 표시 (100엔, 100동, 100루피아)
+    unit_text = f"{unit}" if unit > 1 else "1"
+
+    # 전일대비 포맷
+    if change is not None and change_pct is not None:
+        change_emoji = "+" if change > 0 else "" if change < 0 else ""
+        arrow = "▲" if change > 0 else "▼" if change < 0 else "-"
+        change_text = f" {arrow}{abs(change):,.2f} ({change_emoji}{change_pct:.2f}%)"
+    else:
+        change_text = ""
+
+    return f"{emoji} {symbol}{unit_text} = ₩{rate:,.2f}{change_text}"
 
 
 async def metal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

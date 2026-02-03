@@ -55,8 +55,12 @@ class MarketDaily(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     date = Column(Date, index=True)
 
-    # 환율
+    # 환율 (레거시 - 호환성 유지)
     usd_krw = Column(Float, nullable=True)
+
+    # 전체 환율 데이터 (네이버 API 기반)
+    # {"USD": {"rate": 1448.50, "change": -5.00, "change_pct": -0.34, "unit": 1}, ...}
+    exchange_rates = Column(JSON, nullable=True)
 
     # 크립토 (주요 BTC 포커스, 나머지는 JSON으로 확장 가능)
     btc_usdt = Column(Float, nullable=True)

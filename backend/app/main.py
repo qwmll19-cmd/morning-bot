@@ -50,6 +50,8 @@ def run_db_migrations():
         "ALTER TABLE market_daily ADD COLUMN IF NOT EXISTS sp500_index DOUBLE PRECISION",
         "ALTER TABLE market_daily ADD COLUMN IF NOT EXISTS sp500_index_change DOUBLE PRECISION",
         "ALTER TABLE market_daily ADD COLUMN IF NOT EXISTS sp500_index_change_pct DOUBLE PRECISION",
+        # 전체 환율 데이터 (네이버 API 기반)
+        "ALTER TABLE market_daily ADD COLUMN IF NOT EXISTS exchange_rates JSONB",
     ]
 
     try:
