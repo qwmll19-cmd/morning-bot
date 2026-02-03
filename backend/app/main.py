@@ -153,6 +153,23 @@ def health_check(db: Session = Depends(get_db)) -> dict:
     return {"status": "ok"}
 
 
+@app.get("/api/debug/bot-status")
+def debug_bot_status() -> dict:
+    """봇 상태 디버깅용"""
+    import os
+    from backend.app.config import settings
+
+    token = settings.TELEGRAM_TOKEN
+    token_exists = bool(token)
+    token_preview = f"{token[:10]}...{token[-5:]}" if token and len(token) > 15 else "NOT_SET"
+
+    return {
+        "telegram_token_exists": token_exists,
+        "telegram_token_preview": token_preview,
+        "env_telegram_token_exists": bool(os.getenv("TELEGRAM_TOKEN")),
+    }
+
+
 # ---- 오늘 요약 ----
 @app.get("/api/today/summary", response_model=TodaySummaryResponse)
 def get_today_summary(
