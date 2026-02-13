@@ -39,7 +39,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # 2. 하드코딩 제거
-# METALSDEV_API_KEY = "AGMKHJ71JN8LPPER7C7M290ER7C7M"  # 삭제
+# METALSDEV_API_KEY = "REDACTED"  # 삭제
 api_key = settings.METALSDEV_API_KEY  # .env에서 가져오기
 
 # 3. 모든 예외에 로깅 추가

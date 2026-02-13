@@ -2,9 +2,10 @@ from datetime import date as date_type
 from pathlib import Path
 import logging
 import threading
+import os
 from typing import List, Optional
 
-from fastapi import FastAPI, Depends, Query
+from fastapi import FastAPI, Depends, Query, Header, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, ConfigDict
 
@@ -12,6 +13,20 @@ from backend.app.db.session import Base, engine, get_db
 from backend.app.db.models import NewsDaily, MarketDaily
 from backend.app.collectors.market_collector import collect_market_daily
 from backend.app.scheduler.jobs import start_scheduler
+from backend.app.config import settings
+
+# ---- Cron API 인증 ----
+CRON_SECRET = os.getenv("CRON_SECRET", "")
+
+# 운영 환경에서는 CRON_SECRET 필수
+if settings.APP_ENV != "local" and not CRON_SECRET:
+    raise RuntimeError("CRON_SECRET must be set in non-local environments")
+
+
+def verify_cron_secret(x_cron_secret: str = Header(default="")) -> None:
+    """Cron 요청 인증 (선택적)"""
+    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid cron secret")
 
 
 # ---- Logging ----
@@ -201,7 +216,7 @@ def health_check(db: Session = Depends(get_db)) -> dict:
 
 
 @app.get("/api/debug/bot-status")
-def debug_bot_status() -> dict:
+def debug_bot_status(_: None = Depends(verify_cron_secret)) -> dict:
     """봇 상태 디버깅용"""
     import os
     from backend.app.config import settings
@@ -378,6 +393,7 @@ def get_today_summary(
 @app.post("/api/dev/collect-markets-today", response_model=MarketDailyResponse)
 def dev_collect_markets_today(
     db: Session = Depends(get_db),
+    _: None = Depends(verify_cron_secret),
 ) -> MarketDailyResponse:
     """수동 테스트용 엔드포인트.
 
@@ -390,7 +406,10 @@ def dev_collect_markets_today(
 
 # ---- 데이터 수집 API (중요!) ----
 @app.get("/api/collect/market")
-def collect_market_data(db: Session = Depends(get_db)) -> dict:
+def collect_market_data(
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_cron_secret),
+) -> dict:
     """
     시장 데이터 수집 (환율, BTC, 금/은/구리, KOSPI Top5)
     수동으로 데이터 수집할 때 사용
@@ -415,7 +434,10 @@ def collect_market_data(db: Session = Depends(get_db)) -> dict:
 
 
 @app.get("/api/collect/news")
-def collect_news_data(db: Session = Depends(get_db)) -> dict:
+def collect_news_data(
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_cron_secret),
+) -> dict:
     """
     뉴스 데이터 수집 (v3 - 언론사별 수집 + 핫 점수)
     수동으로 데이터 수집할 때 사용
@@ -492,18 +514,6 @@ def get_news(
 
 
 # ---- Cron API 엔드포인트 (cron-job.org용) ----
-from fastapi import Header, HTTPException
-import os
-
-CRON_SECRET = os.getenv("CRON_SECRET", "")
-
-
-def verify_cron_secret(x_cron_secret: str = Header(default="")) -> None:
-    """Cron 요청 인증 (선택적)"""
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
-        raise HTTPException(status_code=403, detail="Invalid cron secret")
-
-
 @app.get("/api/cron/keep-alive")
 def cron_keep_alive() -> dict:
     """10분마다 - Render 슬립 방지 (인증 불필요)"""
@@ -736,7 +746,10 @@ def admin_lotto_init(
 
 
 @app.get("/api/admin/lotto-status")
-def admin_lotto_status(db: Session = Depends(get_db)) -> dict:
+def admin_lotto_status(
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_cron_secret),
+) -> dict:
     """로또 DB 상태 확인 (인증 불필요)"""
     from backend.app.db.models import LottoDraw, LottoStatsCache
 
@@ -754,7 +767,10 @@ def admin_lotto_status(db: Session = Depends(get_db)) -> dict:
 
 
 @app.get("/api/admin/lotto-export")
-def admin_lotto_export(db: Session = Depends(get_db)) -> dict:
+def admin_lotto_export(
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_cron_secret),
+) -> dict:
     """로컬 SQLite에서 로또 데이터 JSON 추출 (마이그레이션용)"""
     from backend.app.db.models import LottoDraw
 

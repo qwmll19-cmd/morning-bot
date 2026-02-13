@@ -270,7 +270,7 @@ run_date=datetime.now(timezone.utc)  # UTC
 
 #### 현재 상태
 ```bash
-TELEGRAM_TOKEN=8291242843:AAFIauBkGPPovB-WZVZvEjVuzBW-UDF7KqY
+TELEGRAM_TOKEN=REDACTED
 NAVER_CLIENT_ID=...
 NAVER_CLIENT_SECRET=...
 ```

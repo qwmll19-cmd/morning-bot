@@ -57,7 +57,7 @@ except Exception as e:
 **문제**:
 ```python
 # 하드코딩된 API 키
-METALSDEV_API_KEY = "AGMKHJ71JN8LPPER7C7M290ER7C7M"
+METALSDEV_API_KEY = "REDACTED"
 ```
 
 **영향**:
