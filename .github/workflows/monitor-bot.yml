@@ -27,17 +27,7 @@ jobs:
           RAW="$(curl -s -m 15 -H "X-Cron-Secret: $CRON_SECRET" "$BOT_STATUS_URL" || true)"
           export RAW
 
-          RUNNING="$(python - <<'PY'
-import json, os
-raw = os.environ.get("RAW", "")
-try:
-    data = json.loads(raw)
-    running = bool(data.get("bot_running"))
-except Exception:
-    running = False
-print("true" if running else "false")
-PY
-)"
+          RUNNING="$(python -c $'import json, os\nraw=os.environ.get(\"RAW\", \"\")\ntry:\n    data=json.loads(raw)\n    running=bool(data.get(\"bot_running\"))\nexcept Exception:\n    running=False\nprint(\"true\" if running else \"false\")')"
 
           echo "running=$RUNNING" >> "$GITHUB_OUTPUT"
 
