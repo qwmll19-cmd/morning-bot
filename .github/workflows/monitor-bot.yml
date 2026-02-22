@@ -1,0 +1,53 @@
+name: Monitor Bot
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check bot status
+        id: check
+        env:
+          BOT_STATUS_URL: ${{ secrets.BOT_STATUS_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$BOT_STATUS_URL" ]; then
+            echo "BOT_STATUS_URL secret is required"
+            exit 1
+          fi
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET secret is required"
+            exit 1
+          fi
+
+          RAW="$(curl -s -m 15 -H "X-Cron-Secret: $CRON_SECRET" "$BOT_STATUS_URL" || true)"
+          export RAW
+
+          RUNNING="$(python - <<'PY'
+import json, os
+raw = os.environ.get("RAW", "")
+try:
+    data = json.loads(raw)
+    running = bool(data.get("bot_running"))
+except Exception:
+    running = False
+print("true" if running else "false")
+PY
+)"
+
+          echo "running=$RUNNING" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger Render deploy hook
+        if: steps.check.outputs.running != 'true'
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "RENDER_DEPLOY_HOOK_URL secret is required"
+            exit 1
+          fi
+          curl -s -X POST "$RENDER_DEPLOY_HOOK_URL"
