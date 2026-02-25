@@ -39,33 +39,10 @@ def fetch_barotem(server: Optional[str] = None, page_limit: int = 1) -> List[Dic
         return []
 
     offers: List[Dict] = []
-    base_params = {
-        "sell": "sell",
-        "category": "",
-        "display": "1",
-        "orderby": "1",
-        "minpay": "",
-        "maxpay": "",
-        "search_word": "",
-        "brand": "",
-        "buyloc": "",
-        "opt1": "24489",
-        "opt2": "",
-        "opt3": "",
-        "opt4": "",
-        "opt5": "",
-        "opt6": "",
-        "opt7": "",
-        "opt8": "",
-        "opt9": "",
-        "opt10": "",
-    }
-
     for page in range(1, page_limit + 1):
-        params = dict(base_params)
-        params["page"] = str(page)
+        url = f"{base_url}?page={page}"
         try:
-            res = requests.get(base_url, headers=HEADERS, params=params, timeout=15)
+            res = requests.get(url, headers=HEADERS, timeout=15)
             res.raise_for_status()
         except Exception as e:
             logger.warning("barotem request failed: %s", e)
