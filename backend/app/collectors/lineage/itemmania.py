@@ -14,6 +14,9 @@ BASE_URL = "https://www.itemmania.com/sell/list.html?search_game=5913"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Connection": "keep-alive",
 }
 
 _AMOUNT_BLOCK_RE = re.compile(r"\[수량\s*:\s*([0-9,]+)만\]")
@@ -58,7 +61,7 @@ def fetch_itemmania(server: Optional[str] = None, page_limit: int = 1) -> List[D
             url = f"{BASE_URL}&page={page}"
 
         try:
-            res = requests.get(url, headers=HEADERS, timeout=15)
+            res = requests.get(url, headers={**HEADERS, "Referer": BASE_URL}, timeout=15)
             res.raise_for_status()
         except Exception as e:
             logger.warning("itemmania request failed: %s", e)
