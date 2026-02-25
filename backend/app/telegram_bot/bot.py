@@ -608,31 +608,24 @@ async def lineage_now_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         snapshots = get_latest_snapshots(db)
         by_server = {s.server: s for s in snapshots}
 
-        # 서버별 건수로 상위 5개 선정 (질리언은 항상 포함)
-        from sqlalchemy import func
-        from backend.app.db.models import LineagePrice
-
-        top_rows = (
-            db.query(LineagePrice.server, func.count(LineagePrice.id).label("cnt"))
-            .group_by(LineagePrice.server)
-            .order_by(func.count(LineagePrice.id).desc())
-            .limit(5)
-            .all()
-        )
-        top_servers = [r[0] for r in top_rows]
-        if "질리언" not in top_servers:
-            if len(top_servers) >= 5:
-                top_servers[-1] = "질리언"
-            else:
-                top_servers.append("질리언")
-
         lines = ["[리니지 클래식 아데나 시세]"]
 
-        for server in top_servers:
-            s = by_server.get(server)
-            if not s:
-                lines.append(f"{server}: 데이터 없음")
+        # 질리언 고정 포함
+        if "질리언" in by_server:
+            s = by_server["질리언"]
+            lines.append(
+                f"질리언: 중간값 {_format_lineage_price(s.median_price_per_10k)} / "
+                f"평균 {_format_lineage_price(s.average_price_per_10k)} "
+                f"({_format_lineage_price(s.min_price_per_10k)}~{_format_lineage_price(s.max_price_per_10k)})"
+            )
+        else:
+            lines.append("질리언: 데이터 없음")
+
+        # 나머지 서버
+        for server in sorted(by_server.keys()):
+            if server == "질리언":
                 continue
+            s = by_server[server]
             lines.append(
                 f"{server}: 중간값 {_format_lineage_price(s.median_price_per_10k)} / "
                 f"평균 {_format_lineage_price(s.average_price_per_10k)} "
