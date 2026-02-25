@@ -18,7 +18,6 @@ HEADERS = {
 
 _AMOUNT_RE = re.compile(r"([0-9,]+)만")
 _PRICE_RE = re.compile(r"([0-9,]+)원")
-_PRICE_PER_10K_RE = re.compile(r"만당\s*([0-9,]+)원|1만당\s*([0-9,]+)원")
 _TIME_RE = re.compile(r"(\d+분전|\d+시간전|\d+일전|\d{2}/\d{2})")
 
 
@@ -50,6 +49,16 @@ def fetch_barotem(server: Optional[str] = None, page_limit: int = 1) -> List[Dic
         "search_word": "",
         "brand": "",
         "buyloc": "",
+        "opt1": "24489",
+        "opt2": "",
+        "opt3": "",
+        "opt4": "",
+        "opt5": "",
+        "opt6": "",
+        "opt7": "",
+        "opt8": "",
+        "opt9": "",
+        "opt10": "",
     }
 
     for page in range(1, page_limit + 1):
@@ -74,13 +83,11 @@ def fetch_barotem(server: Optional[str] = None, page_limit: int = 1) -> List[Dic
             if not detected:
                 continue
             amount_match = _AMOUNT_RE.search(line)
-            price_per_10k_match = _PRICE_PER_10K_RE.search(line)
-            if not amount_match or not price_per_10k_match:
+            price_match = _PRICE_RE.search(line)
+            if not amount_match or not price_match:
                 continue
             amount = int(amount_match.group(1).replace(",", "")) * 10000
-            per_10k_str = price_per_10k_match.group(1) or price_per_10k_match.group(2)
-            price_per_10k = int(per_10k_str.replace(",", ""))
-            price = int(price_per_10k * (amount / 10000))
+            price = int(price_match.group(1).replace(",", ""))
             registered_at = None
             time_match = _TIME_RE.search(line)
             if time_match:
@@ -92,7 +99,6 @@ def fetch_barotem(server: Optional[str] = None, page_limit: int = 1) -> List[Dic
                     "server": detected,
                     "amount": amount,
                     "price": price,
-                    "price_per_10k": price_per_10k,
                     "registered_at": registered_at,
                 }
             )

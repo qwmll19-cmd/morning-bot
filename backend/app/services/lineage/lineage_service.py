@@ -33,9 +33,7 @@ def collect_all_offers(page_limit: int = 1) -> List[Dict]:
             if amount < settings.LINEAGE_MIN_AMOUNT:
                 continue
             price = int(o.get("price", 0))
-            price_per_10k = o.get("price_per_10k")
-            if price_per_10k is None:
-                price_per_10k = _calc_price_per_10k(amount, price)
+            price_per_10k = _calc_price_per_10k(amount, price)
             if price_per_10k is None:
                 continue
             normalized.append(
