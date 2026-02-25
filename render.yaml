@@ -40,14 +40,6 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
-      - key: LINEAGE_ENABLED
-        value: "1"
-      - key: LINEAGE_SCHEDULE_MINUTES
-        value: "30"
-      - key: LINEAGE_MIN_AMOUNT
-        value: "1000000"
-      - key: LINEAGE_OUTLIER_FACTOR
-        value: "2.0"
 
 databases:
   - name: morning-bot-db

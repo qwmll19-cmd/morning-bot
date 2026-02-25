@@ -51,23 +51,6 @@ else:
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-LINEAGE_CACHE_TTL = 60 * 3  # 3 minutes
-_lineage_cache: Dict[str, Any] = {}
-
-
-def _cache_get(key: str) -> Optional[str]:
-    item = _lineage_cache.get(key)
-    if not item:
-        return None
-    ts, value = item
-    if time.time() - ts > LINEAGE_CACHE_TTL:
-        return None
-    return value
-
-
-def _cache_set(key: str, value: str) -> None:
-    _lineage_cache[key] = (time.time(), value)
-
 
 async def _on_app_error(update, context):
     """에러 핸들러 - 네트워크 오류는 로그만"""
@@ -198,9 +181,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 📊 시세 조회
 /today - 오늘의 요약 (종합)
-/now - 리니지 클래식 아데나 시세 요약
-/servers - 리니지 클래식 서버 목록
-/server [서버명] - 서버 상세 시세
 /btc - 비트코인 시세
 /crypto - 암호화폐 시세
 /fx - 환율 정보
@@ -579,175 +559,6 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     finally:
         db.close()
-
-
-def _format_lineage_price(value: Optional[float]) -> str:
-    if value is None:
-        return "데이터 없음"
-    return f"{value:,.0f}"
-
-
-async def lineage_now_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not settings.LINEAGE_ENABLED:
-        await update.message.reply_text("라인리지 시세 기능이 비활성화되어 있습니다.")
-        return
-
-    cached = _cache_get("lineage_now")
-    if cached:
-        keyboard = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("전체 서버 보기", callback_data="lineage:servers")]]
-        )
-        await update.message.reply_text(cached, reply_markup=keyboard)
-        return
-
-    from backend.app.db.session import SessionLocal
-    from backend.app.services.lineage.lineage_service import get_latest_snapshots
-
-    db = SessionLocal()
-    try:
-        snapshots = get_latest_snapshots(db)
-        by_server = {s.server: s for s in snapshots}
-
-        lines = ["[리니지 클래식 아데나 시세]"]
-
-        # 질리언 고정 포함
-        if "질리언" in by_server:
-            s = by_server["질리언"]
-            lines.append(
-                f"질리언: 중간값 {_format_lineage_price(s.median_price_per_10k)} / "
-                f"평균 {_format_lineage_price(s.average_price_per_10k)} "
-                f"({_format_lineage_price(s.min_price_per_10k)}~{_format_lineage_price(s.max_price_per_10k)})"
-            )
-        else:
-            lines.append("질리언: 데이터 없음")
-
-        # 나머지 서버
-        for server in sorted(by_server.keys()):
-            if server == "질리언":
-                continue
-            s = by_server[server]
-            lines.append(
-                f"{server}: 중간값 {_format_lineage_price(s.median_price_per_10k)} / "
-                f"평균 {_format_lineage_price(s.average_price_per_10k)} "
-                f"({_format_lineage_price(s.min_price_per_10k)}~{_format_lineage_price(s.max_price_per_10k)})"
-            )
-
-        message = "\n".join(lines)
-        _cache_set("lineage_now", message)
-
-        keyboard = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("전체 서버 보기", callback_data="lineage:servers")]]
-        )
-        await update.message.reply_text(message, reply_markup=keyboard)
-    finally:
-        db.close()
-
-
-async def lineage_servers_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not settings.LINEAGE_ENABLED:
-        await update.message.reply_text("라인리지 시세 기능이 비활성화되어 있습니다.")
-        return
-
-    from backend.app.db.session import SessionLocal
-    from backend.app.services.lineage.lineage_service import get_latest_snapshots
-
-    db = SessionLocal()
-    try:
-        snapshots = get_latest_snapshots(db)
-        servers = sorted({s.server for s in snapshots})
-        if "질리언" not in servers:
-            servers.insert(0, "질리언")
-
-        if not servers:
-            await update.message.reply_text("서버 목록이 없습니다.")
-            return
-
-        # 버튼 생성 (3열)
-        rows = []
-        row = []
-        for idx, server in enumerate(servers, start=1):
-            row.append(InlineKeyboardButton(server, callback_data=f"lineage:server:{server}"))
-            if idx % 3 == 0:
-                rows.append(row)
-                row = []
-        if row:
-            rows.append(row)
-
-        keyboard = InlineKeyboardMarkup(rows)
-        message = "전체 서버 목록을 선택하세요."
-        await update.message.reply_text(message, reply_markup=keyboard)
-    finally:
-        db.close()
-
-
-async def lineage_server_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not settings.LINEAGE_ENABLED:
-        await update.message.reply_text("라인리지 시세 기능이 비활성화되어 있습니다.")
-        return
-
-    if not context.args:
-        await update.message.reply_text("사용법: /server 서버명")
-        return
-
-    server = " ".join(context.args).strip()
-    cache_key = f"lineage_server:{server}"
-    cached = _cache_get(cache_key)
-    if cached:
-        await update.message.reply_text(cached)
-        return
-
-    from backend.app.db.session import SessionLocal
-    from backend.app.db.models import LineagePriceSnapshot
-    from backend.app.services.lineage.lineage_service import get_server_offers
-
-    db = SessionLocal()
-    try:
-        snapshot = db.query(LineagePriceSnapshot).filter(LineagePriceSnapshot.server == server).first()
-        if not snapshot:
-            await update.message.reply_text(f"{server}: 데이터 없음")
-            return
-
-        offers = get_server_offers(db, server, limit=5)
-
-        lines = [
-            f"[{server} 상세]",
-            f"대표가(중간값): {_format_lineage_price(snapshot.median_price_per_10k)}",
-            f"평균가: {_format_lineage_price(snapshot.average_price_per_10k)}",
-            f"범위: {_format_lineage_price(snapshot.min_price_per_10k)} ~ {_format_lineage_price(snapshot.max_price_per_10k)}",
-            "",
-            "상위 5건:",
-        ]
-
-        if not offers:
-            lines.append("데이터 없음")
-        else:
-            for o in offers:
-                lines.append(
-                    f"- {o.source} / {o.amount:,.0f} / {o.price:,.0f}원 / {o.price_per_10k:,.0f}원(만)"
-                )
-
-        message = "\n".join(lines)
-        _cache_set(cache_key, message)
-        await update.message.reply_text(message)
-    finally:
-        db.close()
-
-
-async def lineage_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-
-    data = query.data or ""
-    if data == "lineage:servers":
-        await lineage_servers_command(update, context)
-        return
-    if data.startswith("lineage:server:"):
-        server = data.split("lineage:server:", 1)[1]
-        context.args = [server]
-        await lineage_server_command(update, context)
-        return
 
 
 async def fetch_coin_ticker(symbol: str) -> Optional[Dict[str, Any]]:
@@ -2107,9 +1918,6 @@ def _build_application(token: str):
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("today", today_command))
-    application.add_handler(CommandHandler("now", lineage_now_command))
-    application.add_handler(CommandHandler("servers", lineage_servers_command))
-    application.add_handler(CommandHandler("server", lineage_server_command))
     application.add_handler(CommandHandler("btc", btc_command))
     application.add_handler(CommandHandler("crypto", crypto_command))
     application.add_handler(CommandHandler("fx", fx_command))
@@ -2131,7 +1939,6 @@ def _build_application(token: str):
     application.add_handler(CallbackQueryHandler(on_market_index_callback, pattern="^mkt:"))
     application.add_handler(CallbackQueryHandler(lotto_generate_callback, pattern="^lotto_gen:"))
     application.add_handler(CallbackQueryHandler(lotto_result_callback, pattern="^lotto_result:"))
-    application.add_handler(CallbackQueryHandler(lineage_callback, pattern="^lineage:"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_buttons))
     return application
 

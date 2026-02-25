@@ -307,32 +307,3 @@ class NotificationLog(Base):
         # 재시도 대상 조회 최적화
         Index('ix_notif_status_date', 'status', 'scheduled_date', 'retry_count'),
     )
-
-
-class LineagePrice(Base):
-    __tablename__ = "lineage_prices"
-
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    source = Column(String(50), index=True)  # itembay/itemmania/barotem
-    server = Column(String(100), index=True)
-    amount = Column(Integer)  # 아데나 수량
-    price = Column(Integer)  # 총액(원)
-    price_per_10k = Column(Float, index=True)
-    registered_at = Column(String(50), nullable=True)  # 원본 표시 시간(텍스트)
-    created_at = Column(DateTime, default=utcnow, index=True)
-
-    __table_args__ = (
-        Index('ix_lineage_source_server', 'source', 'server'),
-    )
-
-
-class LineagePriceSnapshot(Base):
-    __tablename__ = "lineage_price_snapshot"
-
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    server = Column(String(100), index=True, unique=True)
-    median_price_per_10k = Column(Float, nullable=True)
-    average_price_per_10k = Column(Float, nullable=True)
-    min_price_per_10k = Column(Float, nullable=True)
-    max_price_per_10k = Column(Float, nullable=True)
-    updated_at = Column(DateTime, default=utcnow, index=True)
