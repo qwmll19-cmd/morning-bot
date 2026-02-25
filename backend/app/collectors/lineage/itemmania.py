@@ -95,6 +95,7 @@ def fetch_itemmania(server: Optional[str] = None, page_limit: int = 1) -> List[D
                 }
             )
 
+        logger.info("itemmania page %s parsed offers=%s", page, len(offers))
         time.sleep(1.5)
 
     return offers

@@ -20,11 +20,15 @@ def _calc_price_per_10k(amount: int, price: int) -> Optional[float]:
     return price / (amount / 10000)
 
 
-def collect_all_offers(page_limit: int = 1) -> List[Dict]:
+def collect_all_offers(page_limit: int = 1) -> Dict[str, List[Dict]]:
     offers: List[Dict] = []
-    offers.extend(fetch_itembay(page_limit=page_limit))
-    offers.extend(fetch_itemmania(page_limit=page_limit))
-    offers.extend(fetch_barotem(page_limit=page_limit))
+    source_offers = {
+        "itembay": fetch_itembay(page_limit=page_limit),
+        "itemmania": fetch_itemmania(page_limit=page_limit),
+        "barotem": fetch_barotem(page_limit=page_limit),
+    }
+    for items in source_offers.values():
+        offers.extend(items)
 
     normalized: List[Dict] = []
     for o in offers:
@@ -51,7 +55,8 @@ def collect_all_offers(page_limit: int = 1) -> List[Dict]:
         except Exception:
             continue
 
-    return normalized
+    source_offers["normalized"] = normalized
+    return source_offers
 
 
 def save_offers(db: Session, offers: List[Dict]) -> None:
@@ -88,7 +93,8 @@ def cleanup_old_offers(db: Session) -> int:
 
 
 def collect_and_store(db: Session, page_limit: int = 1) -> Dict[str, Dict]:
-    offers = collect_all_offers(page_limit=page_limit)
+    source_offers = collect_all_offers(page_limit=page_limit)
+    offers = source_offers.get("normalized", [])
     if not offers:
         return {}
 
@@ -96,7 +102,15 @@ def collect_and_store(db: Session, page_limit: int = 1) -> Dict[str, Dict]:
     save_offers(db, offers)
     save_snapshots(db, snapshots)
     cleanup_old_offers(db)
-    return snapshots
+    return {
+        "snapshots": snapshots,
+        "counts": {
+            "itembay": len(source_offers.get("itembay", [])),
+            "itemmania": len(source_offers.get("itemmania", [])),
+            "barotem": len(source_offers.get("barotem", [])),
+            "normalized": len(offers),
+        },
+    }
 
 
 def get_latest_snapshots(db: Session) -> List[LineagePriceSnapshot]:

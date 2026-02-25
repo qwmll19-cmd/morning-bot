@@ -135,6 +135,7 @@ def fetch_barotem(server: Optional[str] = None, page_limit: int = 1) -> List[Dic
                 }
             )
 
+        logger.info("barotem page %s parsed offers=%s", page, len(offers))
         time.sleep(1.5)
 
     return offers

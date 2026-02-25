@@ -994,11 +994,14 @@ def admin_lineage_collect(
     """라인리지 시세 수집 수동 트리거"""
     from backend.app.services.lineage.lineage_service import collect_and_store
     try:
-        snapshots = collect_and_store(db, page_limit=1)
+        result = collect_and_store(db, page_limit=1)
         db.commit()
+        snapshots = result.get("snapshots", {})
+        counts = result.get("counts", {})
         return {
             "status": "success",
             "servers": len(snapshots),
+            "counts": counts,
         }
     except Exception as e:
         db.rollback()
