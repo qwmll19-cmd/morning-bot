@@ -119,7 +119,6 @@ def fetch_itembay(server: Optional[str] = None, page_limit: int = 1) -> List[Dic
 
             i += 1
 
-        logger.info("itembay page %s parsed offers=%s", page, len(offers))
         time.sleep(1.5)
 
     return offers

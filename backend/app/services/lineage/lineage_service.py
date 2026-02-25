@@ -20,15 +20,11 @@ def _calc_price_per_10k(amount: int, price: int) -> Optional[float]:
     return price / (amount / 10000)
 
 
-def collect_all_offers(page_limit: int = 1) -> Dict[str, List[Dict]]:
+def collect_all_offers(page_limit: int = 1) -> List[Dict]:
     offers: List[Dict] = []
-    source_offers = {
-        "itembay": fetch_itembay(page_limit=page_limit),
-        "itemmania": fetch_itemmania(page_limit=page_limit),
-        "barotem": fetch_barotem(page_limit=page_limit),
-    }
-    for items in source_offers.values():
-        offers.extend(items)
+    offers.extend(fetch_itembay(page_limit=page_limit))
+    offers.extend(fetch_itemmania(page_limit=page_limit))
+    offers.extend(fetch_barotem(page_limit=page_limit))
 
     normalized: List[Dict] = []
     for o in offers:
@@ -55,8 +51,7 @@ def collect_all_offers(page_limit: int = 1) -> Dict[str, List[Dict]]:
         except Exception:
             continue
 
-    source_offers["normalized"] = normalized
-    return source_offers
+    return normalized
 
 
 def save_offers(db: Session, offers: List[Dict]) -> None:
@@ -93,8 +88,7 @@ def cleanup_old_offers(db: Session) -> int:
 
 
 def collect_and_store(db: Session, page_limit: int = 1) -> Dict[str, Dict]:
-    source_offers = collect_all_offers(page_limit=page_limit)
-    offers = source_offers.get("normalized", [])
+    offers = collect_all_offers(page_limit=page_limit)
     if not offers:
         return {}
 
@@ -102,15 +96,7 @@ def collect_and_store(db: Session, page_limit: int = 1) -> Dict[str, Dict]:
     save_offers(db, offers)
     save_snapshots(db, snapshots)
     cleanup_old_offers(db)
-    return {
-        "snapshots": snapshots,
-        "counts": {
-            "itembay": len(source_offers.get("itembay", [])),
-            "itemmania": len(source_offers.get("itemmania", [])),
-            "barotem": len(source_offers.get("barotem", [])),
-            "normalized": len(offers),
-        },
-    }
+    return snapshots
 
 
 def get_latest_snapshots(db: Session) -> List[LineagePriceSnapshot]:
