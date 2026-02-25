@@ -51,5 +51,11 @@ class Settings:
     # Lotto (로또봇)
     LOTTO_ADMIN_CHAT_ID: Optional[str] = os.getenv("LOTTO_ADMIN_CHAT_ID")
 
+    # Lineage price watcher
+    LINEAGE_ENABLED: bool = os.getenv("LINEAGE_ENABLED", "0") == "1"
+    LINEAGE_SCHEDULE_MINUTES: int = int(os.getenv("LINEAGE_SCHEDULE_MINUTES", "30"))
+    LINEAGE_MIN_AMOUNT: int = int(os.getenv("LINEAGE_MIN_AMOUNT", "1000000"))
+    LINEAGE_OUTLIER_FACTOR: float = float(os.getenv("LINEAGE_OUTLIER_FACTOR", "2.0"))
+
 
 settings = Settings()

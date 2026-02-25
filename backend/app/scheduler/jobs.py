@@ -7,6 +7,7 @@ import logging
 import json
 from datetime import datetime, time as time_type, timedelta, timezone
 from backend.app.db.session import SessionLocal
+from backend.app.config import settings
 from backend.app.db.models import Subscriber, LottoDraw, LottoStatsCache, NotificationLog
 from backend.app.collectors.news_collector_v3 import build_daily_top5_v3, collect_breaking_news
 from backend.app.collectors.market_collector import collect_market_daily, calculate_daily_changes
@@ -201,6 +202,23 @@ def job_calculate_changes_and_send() -> None:
 
     except Exception as e:
         logger.error(f"9시 5분 작업 실패: {e}", exc_info=True)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def job_collect_lineage_prices() -> None:
+    """라인리지 아데나 시세 수집 (스냅샷 업데이트)"""
+    if not settings.LINEAGE_ENABLED:
+        return
+    db = SessionLocal()
+    try:
+        from backend.app.services.lineage.lineage_service import collect_and_store
+        collect_and_store(db, page_limit=1)
+        db.commit()
+        logger.info("Lineage price snapshot updated")
+    except Exception as e:
+        logger.error(f"Lineage price collection failed: {e}", exc_info=True)
         db.rollback()
     finally:
         db.close()
@@ -552,6 +570,16 @@ def start_scheduler() -> None:
         id="retry_failed_notifications",
         replace_existing=True
     )
+
+    # 리니지 아데나 시세 수집 (기본 30분, 설정으로 변경 가능)
+    if settings.LINEAGE_ENABLED:
+        scheduler.add_job(
+            job_collect_lineage_prices,
+            "interval",
+            minutes=settings.LINEAGE_SCHEDULE_MINUTES,
+            id="lineage_price_collect",
+            replace_existing=True
+        )
 
     # 시장 데이터 재수집은 비활성화 (하루 1회 수집 유지)
 
