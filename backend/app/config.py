@@ -56,6 +56,11 @@ class Settings:
     LINEAGE_SCHEDULE_MINUTES: int = int(os.getenv("LINEAGE_SCHEDULE_MINUTES", "30"))
     LINEAGE_MIN_AMOUNT: int = int(os.getenv("LINEAGE_MIN_AMOUNT", "1000000"))
     LINEAGE_OUTLIER_FACTOR: float = float(os.getenv("LINEAGE_OUTLIER_FACTOR", "2.0"))
+    LINEAGE_MAX_PRICE_PER_10K: Optional[int] = (
+        int(os.getenv("LINEAGE_MAX_PRICE_PER_10K"))
+        if os.getenv("LINEAGE_MAX_PRICE_PER_10K")
+        else None
+    )
 
 
 settings = Settings()

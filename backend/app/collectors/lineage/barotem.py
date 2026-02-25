@@ -7,6 +7,7 @@ from typing import List, Dict, Optional
 import requests
 from bs4 import BeautifulSoup
 
+from backend.app.config import settings
 from backend.app.services.lineage.servers import KNOWN_SERVERS
 
 logger = logging.getLogger(__name__)
@@ -16,8 +17,9 @@ HEADERS = {
                   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 }
 
-_AMOUNT_RE = re.compile(r"([0-9,]+)만")
-_PRICE_RE = re.compile(r"([0-9,]+)원")
+_AMOUNT_SINGLE_RE = re.compile(r"([0-9,]+)만\s*아데나")
+_AMOUNT_MIN_RE = re.compile(r"최소\s*([0-9,]+)만\s*아데나")
+_AMOUNT_MAX_RE = re.compile(r"최대\s*([0-9,]+)만\s*아데나")
 _PRICE_PER_10K_RE = re.compile(r"만당\s*([0-9,]+)원|1만당\s*([0-9,]+)원")
 _TIME_RE = re.compile(r"(\d+분전|\d+시간전|\d+일전|\d{2}/\d{2})")
 
@@ -27,6 +29,38 @@ def _detect_server(line: str) -> Optional[str]:
         if s in line:
             return s
     return None
+
+
+def _pick_amount(card_text: str) -> Optional[int]:
+    """단일 수량 또는 최소 수량을 선택"""
+    m = _AMOUNT_SINGLE_RE.search(card_text)
+    if m:
+        return int(m.group(1).replace(",", "")) * 10000
+    m = _AMOUNT_MIN_RE.search(card_text)
+    if m:
+        return int(m.group(1).replace(",", "")) * 10000
+    return None
+
+
+def _extract_card_texts(soup: BeautifulSoup) -> List[str]:
+    texts: List[str] = []
+    for node in soup.find_all(string=_PRICE_PER_10K_RE):
+        cur = node
+        best = None
+        for _ in range(4):
+            if not cur:
+                break
+            parent = cur.parent if hasattr(cur, "parent") else None
+            if not parent:
+                break
+            t = parent.get_text(" ", strip=True)
+            if "만당" in t and ("아데나" in t or "아덴" in t or "게임머니" in t):
+                if best is None or len(t) > len(best):
+                    best = t
+            cur = parent
+        if best:
+            texts.append(best)
+    return list(dict.fromkeys(texts))  # de-dup preserve order
 
 
 def fetch_barotem(server: Optional[str] = None, page_limit: int = 1) -> List[Dict]:
@@ -63,26 +97,30 @@ def fetch_barotem(server: Optional[str] = None, page_limit: int = 1) -> List[Dic
             break
 
         soup = BeautifulSoup(res.text, "html.parser")
-        lines = [l.strip() for l in soup.get_text("\n").splitlines() if l.strip()]
+        card_texts = _extract_card_texts(soup)
 
-        for line in lines:
-            if "아덴" not in line and "아데나" not in line and "게임머니" not in line:
+        for card_text in card_texts:
+            if "수량 부족" in card_text or "거래완료" in card_text:
                 continue
-            detected = _detect_server(line)
+            detected = _detect_server(card_text)
             if server and detected != server:
                 continue
             if not detected:
                 continue
-            amount_match = _AMOUNT_RE.search(line)
-            price_per_10k_match = _PRICE_PER_10K_RE.search(line)
-            if not amount_match or not price_per_10k_match:
+            amount = _pick_amount(card_text)
+            price_per_10k_match = _PRICE_PER_10K_RE.search(card_text)
+            if not amount or not price_per_10k_match:
                 continue
-            amount = int(amount_match.group(1).replace(",", "")) * 10000
             per_10k_str = price_per_10k_match.group(1) or price_per_10k_match.group(2)
             price_per_10k = int(per_10k_str.replace(",", ""))
+
+            max_price = settings.LINEAGE_MAX_PRICE_PER_10K
+            if max_price and price_per_10k > max_price:
+                continue
+
             price = int(price_per_10k * (amount / 10000))
             registered_at = None
-            time_match = _TIME_RE.search(line)
+            time_match = _TIME_RE.search(card_text)
             if time_match:
                 registered_at = time_match.group(1)
 
