@@ -14,9 +14,6 @@ BASE_URL = "https://www.itembay.com/item/sell/game-3828"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Connection": "keep-alive",
 }
 
 
@@ -66,7 +63,7 @@ def fetch_itembay(server: Optional[str] = None, page_limit: int = 1) -> List[Dic
             url = f"{BASE_URL}?page={page}"
 
         try:
-            res = requests.get(url, headers={**HEADERS, "Referer": BASE_URL}, timeout=15)
+            res = requests.get(url, headers=HEADERS, timeout=15)
             res.raise_for_status()
         except Exception as e:
             logger.warning("itembay request failed: %s", e)

@@ -15,12 +15,6 @@ logger = logging.getLogger(__name__)
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "DNT": "1",
-    "Upgrade-Insecure-Requests": "1",
 }
 
 _AMOUNT_SINGLE_RE = re.compile(r"([0-9,]+)만\s*아데나")
@@ -92,31 +86,11 @@ def fetch_barotem(server: Optional[str] = None, page_limit: int = 1) -> List[Dic
         "buyloc": "",
     }
 
-    # 세션 쿠키를 먼저 획득해서 403 가능성을 낮춤
-    list_url = base_url.replace("/productTable/", "/lists/")
-    session = requests.Session()
-    session.headers.update(HEADERS)
-    try:
-        session.get(list_url, headers={"Referer": list_url}, params=dict(base_params, page="1"), timeout=15)
-    except Exception as e:
-        logger.warning("barotem list prefetch failed: %s", e)
-
     for page in range(1, page_limit + 1):
         params = dict(base_params)
         params["page"] = str(page)
         try:
-            res = session.get(
-                base_url,
-                headers={
-                    "Referer": list_url,
-                    "X-Requested-With": "XMLHttpRequest",
-                },
-                params=params,
-                timeout=15,
-            )
-            if res.status_code == 403:
-                logger.warning("barotem 403 forbidden (page=%s).", page)
-                break
+            res = requests.get(base_url, headers=HEADERS, params=params, timeout=15)
             res.raise_for_status()
         except Exception as e:
             logger.warning("barotem request failed: %s", e)
