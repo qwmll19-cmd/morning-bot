@@ -19,6 +19,7 @@ HEADERS = {
 
 _AMOUNT_RANGE_RE = re.compile(r"([0-9,]+)만\s*~\s*([0-9,]+)만")
 _PRICE_RE = re.compile(r"([0-9,]+)원")
+_PRICE_PER_10K_RE = re.compile(r"만당\s*([0-9,]+)원|1만당\s*([0-9,]+)원")
 _TIME_RE = re.compile(r"(\d+분전|\d+시간전|\d+일전|\d{2}/\d{2})")
 
 
@@ -93,21 +94,25 @@ def fetch_itembay(server: Optional[str] = None, page_limit: int = 1) -> List[Dic
 
             if current_server and current_is_money and "미리보기버튼" in line:
                 amount = _parse_amount(line)
-                price = _parse_price(line)
+                price_per_10k_match = _PRICE_PER_10K_RE.search(line)
                 registered_at = _parse_time(line)
 
-                if price is None and i + 1 < len(lines):
-                    price = _parse_price(lines[i + 1])
+                if price_per_10k_match is None and i + 1 < len(lines):
+                    price_per_10k_match = _PRICE_PER_10K_RE.search(lines[i + 1])
                 if registered_at is None and i + 1 < len(lines):
                     registered_at = _parse_time(lines[i + 1])
 
-                if amount and price:
+                if amount and price_per_10k_match:
+                    per_10k_str = price_per_10k_match.group(1) or price_per_10k_match.group(2)
+                    price_per_10k = int(per_10k_str.replace(",", ""))
+                    total_price = int(price_per_10k * (amount / 10000))
                     offers.append(
                         {
                             "source": "itembay",
                             "server": current_server,
                             "amount": amount,
-                            "price": price * (amount // 10000),
+                            "price": total_price,
+                            "price_per_10k": price_per_10k,
                             "registered_at": registered_at,
                         }
                     )

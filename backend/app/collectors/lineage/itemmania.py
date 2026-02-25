@@ -19,6 +19,7 @@ HEADERS = {
 _AMOUNT_BLOCK_RE = re.compile(r"\[수량\s*:\s*([0-9,]+)만\]")
 _AMOUNT_RE = re.compile(r"([0-9,]+)만")
 _PRICE_RE = re.compile(r"([0-9,]+)원")
+_PRICE_PER_10K_RE = re.compile(r"만당\s*([0-9,]+)원|1만당\s*([0-9,]+)원")
 
 
 def _parse_amount(line: str) -> Optional[int]:
@@ -70,8 +71,8 @@ def fetch_itemmania(server: Optional[str] = None, page_limit: int = 1) -> List[D
             if "아덴" not in line and "아데나" not in line and "게임머니" not in line:
                 continue
             amt = _parse_amount(line)
-            price = _parse_price(line)
-            if not amt or not price:
+            price_per_10k_match = _PRICE_PER_10K_RE.search(line)
+            if not amt or not price_per_10k_match:
                 continue
             detected = _detect_server(line)
             if server and detected != server:
@@ -79,12 +80,17 @@ def fetch_itemmania(server: Optional[str] = None, page_limit: int = 1) -> List[D
             if not detected:
                 continue
 
+            per_10k_str = price_per_10k_match.group(1) or price_per_10k_match.group(2)
+            price_per_10k = int(per_10k_str.replace(",", ""))
+            price = int(price_per_10k * (amt / 10000))
+
             offers.append(
                 {
                     "source": "itemmania",
                     "server": detected,
                     "amount": amt,
                     "price": price,
+                    "price_per_10k": price_per_10k,
                     "registered_at": None,
                 }
             )
